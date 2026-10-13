@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 
 use crate::theme::ThemeConfig;
@@ -27,7 +27,7 @@ fn default_theme_name() -> String {
 impl Default for Config {
     fn default() -> Self {
         let mut custom_themes = HashMap::new();
-        
+
         custom_themes.insert(
             "dracula".to_string(),
             ThemeConfig {
@@ -109,8 +109,7 @@ pub fn load_config() -> Config {
     if !path.exists() {
         let default = Config::default();
 
-        let yaml =
-            serde_yaml::to_string(&default).expect("Failed to serialize default config");
+        let yaml = serde_yaml::to_string(&default).expect("Failed to serialize default config");
 
         fs::write(&path, yaml).expect("Failed to write default config.yaml");
 
@@ -128,8 +127,7 @@ pub fn load_config() -> Config {
         config.theme = default.theme;
         config.custom_themes = default.custom_themes;
 
-        let yaml =
-            serde_yaml::to_string(&config).expect("Failed to serialize migrated config");
+        let yaml = serde_yaml::to_string(&config).expect("Failed to serialize migrated config");
         let _ = fs::write(&path, yaml); // Ignore write error on read-only environments
     }
 

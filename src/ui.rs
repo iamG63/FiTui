@@ -1,13 +1,13 @@
+use chrono::Datelike as _;
 use ratatui::{
     prelude::*,
-    widgets::{Block, Table, Row, Cell, TableState, Padding, Paragraph},
+    widgets::{Block, Cell, Padding, Paragraph, Row, Table, TableState},
 };
-use chrono::Datelike as _;
 
 use crate::{
     app::{App, Mode},
-    models::{Transaction, TransactionType, RecurringInterval},
-    stats,
+    models::{MonthlyBudget, MonthlyIncome, RecurringInterval, Transaction, TransactionType},
+    money, stats,
     stats::StatsSnapshot,
     theme::Theme,
 };
@@ -66,15 +66,18 @@ fn draw_tabs(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     f.render_widget(tabs, area);
 }
 
-pub fn draw_ui(f: &mut Frame, app: &App, snapshot: &StatsSnapshot) {
+pub fn draw_ui(
+    f: &mut Frame,
+    app: &App,
+    snapshot: &StatsSnapshot,
+    monthly_budgets: &[MonthlyBudget],
+    monthly_income: Option<&MonthlyIncome>,
+) {
     let theme = app.theme;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(1),
-        ])
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(f.size());
 
     draw_tabs(f, chunks[0], app, &theme);
@@ -82,7 +85,17 @@ pub fn draw_ui(f: &mut Frame, app: &App, snapshot: &StatsSnapshot) {
 
     match app.mode {
         Mode::Stats => {
-            stats::draw_stats_view(f, content_area, snapshot, &theme, &app.currency);
+            stats::draw_stats_view(
+                f,
+                content_area,
+                snapshot,
+                &app.transactions,
+                &theme,
+                &app.currency,
+                &app.tags,
+                monthly_budgets,
+                monthly_income,
+            );
         }
 
         Mode::Adding => {
@@ -166,7 +179,27 @@ fn draw_main_view(
         .constraints([Constraint::Length(7), Constraint::Min(1)])
         .split(area);
 
-    draw_header(f, chunks[0], earned, spent, balance, theme, &app.currency);
+    let current_month = chrono::Local::now().format("%Y-%m").to_string();
+    let monthly_spent: f64 = app
+        .transactions
+        .iter()
+        .filter(|tx| {
+            tx.kind == crate::models::TransactionType::Debit
+                && tx.related_transaction_id.is_none()
+                && tx.date.get(..7) == Some(current_month.as_str())
+        })
+        .map(|tx| tx.amount)
+        .sum();
+
+    draw_header(
+        f,
+        chunks[0],
+        earned,
+        monthly_spent,
+        balance,
+        theme,
+        &app.currency,
+    );
     draw_transactions_list(f, chunks[1], transactions, app, theme);
 }
 
@@ -187,60 +220,54 @@ fn draw_transactions_list(
             Span::raw("   "),
             Span::styled(
                 "No transactions yet. Press ",
-                Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::ITALIC),
             ),
             Span::styled(
                 "a",
-                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 " to add one.",
-                Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::ITALIC),
             ),
         ]));
         f.render_widget(empty, layout[0]);
     } else {
         // Column header row — TYPE removed, BALANCE added
         let header = Row::new(vec![
-            centered_header_cell("SOURCE",  theme.subtle, theme),
+            centered_header_cell("SOURCE", theme.subtle, theme),
             sep_cell(theme),
-            centered_header_cell("AMOUNT",  theme.accent, theme),
+            centered_header_cell("AMOUNT", theme.subtle, theme),
             sep_cell(theme),
-            centered_header_cell("BALANCE", theme.subtle, theme),
+            centered_header_cell("RECUR", theme.subtle, theme),
             sep_cell(theme),
-            centered_header_cell("RECUR",   theme.accent, theme),
+            centered_header_cell("CATEGORY", theme.subtle, theme),
             sep_cell(theme),
-            centered_header_cell("TAG",     theme.accent, theme),
+            centered_header_cell("BUCKET", theme.subtle, theme),
         ])
-        .style(Style::default().bg(theme.accent_soft))
+        .style(Style::default().bg(Color::Reset))
         .height(1);
-
-        // Pre-compute running balance for each transaction (oldest → newest).
-        // Transactions are assumed to be stored newest-first, so we reverse,
-        // accumulate, then reverse back so the index matches the display order.
-        let mut running: Vec<f64> = Vec::with_capacity(transactions.len());
-        {
-            let mut bal = 0f64;
-            for tx in transactions.iter().rev() {
-                match tx.kind {
-                    TransactionType::Credit => bal += tx.amount,
-                    TransactionType::Debit  => bal -= tx.amount,
-                }
-                running.push(bal);
-            }
-            running.reverse();
-        }
 
         // Build rows, inserting a date-group divider whenever the date changes.
         // We track the "previous date label" and inject a separator row before
         // the first transaction of each new group.
-        let today     = chrono::Local::now().date_naive();
+        let today = chrono::Local::now().date_naive();
         let yesterday = today - chrono::Duration::days(1);
 
         let date_label = |date_str: &str| -> String {
             if let Ok(d) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-                if d == today     { return "Today".to_string(); }
-                if d == yesterday { return "Yesterday".to_string(); }
+                if d == today {
+                    return "Today".to_string();
+                }
+                if d == yesterday {
+                    return "Yesterday".to_string();
+                }
                 // Same year → omit the year for brevity
                 if d.year() == today.year() {
                     return d.format("%b %-d").to_string(); // e.g. "Feb 24"
@@ -251,7 +278,7 @@ fn draw_transactions_list(
         };
 
         // We need to know the total column count to span the divider row.
-        // Columns: SOURCE │ AMOUNT │ BALANCE │ RECUR │ TAG = 9 cells.
+        // Columns: SOURCE │ AMOUNT │ RECUR │ CATEGORY │ BUCKET = 9 cells.
         const COL_COUNT: usize = 9;
 
         let limit = std::cmp::min(15, transactions.len());
@@ -271,10 +298,11 @@ fn draw_transactions_list(
                     .map(|col| {
                         if col == 0 {
                             Cell::from(
-                                Text::from(format!("  {} ", label))
-                                    .style(Style::default()
+                                Text::from(format!("  {} ", label)).style(
+                                    Style::default()
                                         .fg(theme.accent)
-                                        .add_modifier(Modifier::BOLD)),
+                                        .add_modifier(Modifier::BOLD),
+                                ),
                             )
                         } else {
                             Cell::from(
@@ -300,11 +328,11 @@ fn draw_transactions_list(
             let row_bg = if table_index % 2 == 0 {
                 theme.background
             } else {
-                theme.row_alt  // Add `row_alt` to Theme: a shade just above background, e.g. Color::Rgb(30,30,35) if background is Rgb(24,24,28)
+                theme.row_alt // Add `row_alt` to Theme: a shade just above background, e.g. Color::Rgb(30,30,35) if background is Rgb(24,24,28)
             };
             table_index += 1;
 
-            rows.push(transaction_row(tx, running[i], app, theme, &app.currency, row_bg));
+            rows.push(transaction_row(tx, app, theme, &app.currency, row_bg));
         }
 
         // Compute the visual row index of the selected transaction.
@@ -318,7 +346,9 @@ fn draw_transactions_list(
                     dividers_above += 1;
                     last_date = Some(tx.date.as_str());
                 }
-                if i == app.selected { break; }
+                if i == app.selected {
+                    break;
+                }
             }
             app.selected + dividers_above
         };
@@ -339,34 +369,43 @@ fn draw_transactions_list(
                 None => "ALL".to_string(),
                 Some(idx) => format!("#{}", app.tags[idx].as_str()),
             };
-            let range_str = match (app.filter.start_date.is_empty(), app.filter.end_date.is_empty()) {
+            let range_str = match (
+                app.filter.start_date.is_empty(),
+                app.filter.end_date.is_empty(),
+            ) {
                 (true, true) => "ALL".to_string(),
                 (false, true) => format!("from {}", app.filter.start_date),
                 (true, false) => format!("to {}", app.filter.end_date),
                 (false, false) => format!("{} to {}", app.filter.start_date, app.filter.end_date),
             };
-            format!(" Transactions [Filter: Range={}, Tag={}] ", range_str, filter_tag)
+            format!(
+                " Transactions [Filter: Range={}, Tag={}] ",
+                range_str, filter_tag
+            )
         } else {
             " Transactions ".to_string()
         };
 
-        let table = Table::new(rows, &[
+        let table = Table::new(
+            rows,
+            &[
                 Constraint::Percentage(32), // SOURCE
                 Constraint::Length(1),      // │
                 Constraint::Percentage(14), // AMOUNT
                 Constraint::Length(1),      // │
-                Constraint::Percentage(14), // BALANCE
-                Constraint::Length(1),      // │
                 Constraint::Percentage(10), // RECUR
                 Constraint::Length(1),      // │
-                Constraint::Percentage(22), // TAG
-            ])
-            .header(header)
-            .block(theme.block(&title_text))
-            .column_spacing(0)
-            .style(Style::default().bg(theme.background))
-            .highlight_style(highlight)
-            .highlight_symbol("▶ ");
+                Constraint::Percentage(18), // CATEGORY
+                Constraint::Length(1),      // │
+                Constraint::Percentage(18), // BUCKET
+            ],
+        )
+        .header(header)
+        .block(theme.block(&title_text))
+        .column_spacing(0)
+        .style(Style::default().bg(Color::Reset))
+        .highlight_style(highlight)
+        .highlight_symbol("▶ ");
 
         f.render_stateful_widget(table, layout[0], &mut state);
     }
@@ -375,33 +414,53 @@ fn draw_transactions_list(
     let footer_block = Block::default()
         .borders(ratatui::widgets::Borders::TOP)
         .border_style(Style::default().fg(theme.subtle))
-        .style(Style::default().bg(theme.background))
+        .style(Style::default().bg(Color::Reset))
         .padding(Padding::new(1, 1, 0, 0));
 
-    let key   = |k: &'static str| Span::styled(k, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD));
+    let key = |k: &'static str| {
+        Span::styled(
+            k,
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
     let label = |l: &'static str| Span::styled(l, theme.muted_text());
-    let sep   = || Span::styled("  ", theme.muted_text());
+    let sep = || Span::styled("  ", theme.muted_text());
 
     let mut footer_spans = vec![
-        key("↑↓"), label(" Navigate"),  sep(),
-        key("Tab"), label("/"), key("←→"), label(" Switch view"), sep(),
-        key("a"), label(" Add"),  sep(),
-        key("e"), label(" Edit"),  sep(),
-        key("d"), label(" Delete"), sep(),
-        key("f"), label(" Filter"), sep(),
+        key("↑↓"),
+        label(" Navigate"),
+        sep(),
+        key("Tab"),
+        label("/"),
+        key("←→"),
+        label(" Switch view"),
+        sep(),
+        key("a"),
+        label(" Add"),
+        sep(),
+        key("e"),
+        label(" Edit"),
+        sep(),
+        key("d"),
+        label(" Delete"),
+        sep(),
+        key("f"),
+        label(" Filter"),
+        sep(),
     ];
-    
+
     if app.filter.active {
         footer_spans.push(key("c"));
         footer_spans.push(label(" Clear"));
         footer_spans.push(sep());
     }
-    
+
     footer_spans.push(key("q"));
     footer_spans.push(label(" Quit"));
 
-    let footer = Paragraph::new(Line::from(footer_spans))
-        .block(footer_block);
+    let footer = Paragraph::new(Line::from(footer_spans)).block(footer_block);
 
     f.render_widget(footer, layout[1]);
 }
@@ -412,7 +471,6 @@ fn draw_transactions_list(
 
 fn transaction_row(
     tx: &Transaction,
-    running_balance: f64,
     app: &App,
     theme: &Theme,
     currency: &str,
@@ -422,30 +480,24 @@ fn transaction_row(
 
     let direction_symbol = match tx.kind {
         TransactionType::Credit => "▲",
-        TransactionType::Debit  => "▼",
+        TransactionType::Debit => "▼",
     };
 
     let recur_label = app
         .get_recurring_for_transaction(tx)
         .map(|r| match r.interval {
-            RecurringInterval::Daily   => "Daily",
-            RecurringInterval::Weekly  => "Weekly",
+            RecurringInterval::Daily => "Daily",
+            RecurringInterval::Weekly => "Weekly",
             RecurringInterval::Monthly => "Monthly",
         })
         .unwrap_or("-");
 
-    let amount_str  = format!("{} {}{:.2}", direction_symbol, currency, tx.amount);
-    let balance_str = format!("{}{:.2}", currency, running_balance);
-
-    // Balance color: green if positive, red if negative, muted if zero
-    let balance_color = if running_balance > 0.0 {
-        theme.credit
-    } else if running_balance < 0.0 {
-        theme.debit
-    } else {
-        theme.muted
-    };
-
+    let amount_str = format!(
+        "{} {}{}",
+        direction_symbol,
+        currency,
+        money::format_vnd(tx.amount)
+    );
     // bg is set at the Row level only (via .style below).
     // No per-cell bg — if cells override bg, highlight_style cannot paint
     // the selected row and selection becomes invisible.
@@ -454,37 +506,37 @@ fn transaction_row(
         Cell::from(
             Text::from(truncate_string(&tx.source, 40))
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(theme.foreground).add_modifier(Modifier::BOLD)),
+                .style(Style::default().fg(theme.foreground)),
         ),
         sep_cell_bg(theme, row_bg),
         // AMOUNT — colored with direction symbol
         Cell::from(
             Text::from(amount_str)
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
-        ),
-        sep_cell_bg(theme, row_bg),
-        // BALANCE — running total, color reflects sign
-        Cell::from(
-            Text::from(balance_str)
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(balance_color)),
+                .style(Style::default().fg(color)),
         ),
         sep_cell_bg(theme, row_bg),
         // RECUR
-        Cell::from(
-            Text::from(recur_label)
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(
-                    if recur_label == "-" { theme.muted } else { theme.accent },
-                )),
-        ),
+        Cell::from(Text::from(recur_label).alignment(Alignment::Center).style(
+            Style::default().fg(if recur_label == "-" {
+                theme.muted
+            } else {
+                theme.accent
+            }),
+        )),
         sep_cell_bg(theme, row_bg),
-        // TAG
+        // CATEGORY
         Cell::from(
             Text::from(tx.tag.as_str().to_owned())
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(theme.accent_soft).add_modifier(Modifier::ITALIC)),
+                .style(Style::default().fg(theme.foreground)),
+        ),
+        sep_cell_bg(theme, row_bg),
+        // BUCKET
+        Cell::from(
+            Text::from(tx.bucket.clone())
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(theme.foreground)),
         ),
     ])
     // Row-level bg: drives alternating stripes AND lets highlight_style override cleanly
@@ -493,9 +545,9 @@ fn transaction_row(
 
 fn recurring_row(entry: &crate::models::RecurringEntry, theme: &Theme) -> Row<'static> {
     let (status_symbol, status_style) = if entry.active {
-        ("● Active",   theme.success())
+        ("● Active", theme.success())
     } else {
-        ("○ Paused",   Style::default().fg(theme.muted))
+        ("○ Paused", Style::default().fg(theme.muted))
     };
 
     let interval_str = entry.interval.display().to_owned();
@@ -510,19 +562,25 @@ fn recurring_row(entry: &crate::models::RecurringEntry, theme: &Theme) -> Row<'s
         Cell::from(
             Text::from(truncate_string(&entry.source, 30))
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(theme.foreground).add_modifier(Modifier::BOLD)),
+                .style(
+                    Style::default()
+                        .fg(theme.foreground)
+                        .add_modifier(Modifier::BOLD),
+                ),
         ),
         sep_cell(theme),
         Cell::from(
-            Text::from(format!("{:.2}", entry.amount))
+            Text::from(money::format_vnd(entry.amount))
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(theme.accent)),
         ),
         sep_cell(theme),
         Cell::from(
-            Text::from(interval_str)
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(theme.accent_soft).add_modifier(Modifier::ITALIC)),
+            Text::from(interval_str).alignment(Alignment::Center).style(
+                Style::default()
+                    .fg(theme.accent_soft)
+                    .add_modifier(Modifier::ITALIC),
+            ),
         ),
     ])
 }
@@ -541,12 +599,12 @@ fn draw_recurring_management(f: &mut Frame, area: Rect, app: &App, theme: &Theme
         ])
         .split(area);
 
-    let header_para = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " Recurring Entries",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
-        ),
-    ]))
+    let header_para = Paragraph::new(Line::from(vec![Span::styled(
+        " Recurring Entries",
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD),
+    )]))
     .block(theme.block(""))
     .alignment(Alignment::Left);
 
@@ -556,15 +614,19 @@ fn draw_recurring_management(f: &mut Frame, area: Rect, app: &App, theme: &Theme
         let empty = Paragraph::new(
             "No recurring entries yet. Add a transaction with a recurring interval to get started.",
         )
-        .style(Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC));
+        .style(
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::ITALIC),
+        );
         f.render_widget(empty, layout[1]);
     } else {
         let table_header = Row::new(vec![
-            centered_header_cell("STATUS",   theme.subtle,      theme),
+            centered_header_cell("STATUS", theme.subtle, theme),
             sep_cell(theme),
-            centered_header_cell("SOURCE",   theme.subtle,      theme),
+            centered_header_cell("SOURCE", theme.subtle, theme),
             sep_cell(theme),
-            centered_header_cell("AMOUNT",   theme.accent,      theme),
+            centered_header_cell("AMOUNT", theme.accent, theme),
             sep_cell(theme),
             centered_header_cell("INTERVAL", theme.accent_soft, theme),
         ])
@@ -585,7 +647,9 @@ fn draw_recurring_management(f: &mut Frame, area: Rect, app: &App, theme: &Theme
         //   SOURCE   45% — free text, deserves most space
         //   AMOUNT   20% — numbers
         //   INTERVAL 20% — "Monthly" etc.
-        let table = Table::new(rows, &[
+        let table = Table::new(
+            rows,
+            &[
                 Constraint::Percentage(15), // STATUS
                 Constraint::Length(1),      // │
                 Constraint::Percentage(45), // SOURCE
@@ -593,39 +657,58 @@ fn draw_recurring_management(f: &mut Frame, area: Rect, app: &App, theme: &Theme
                 Constraint::Percentage(20), // AMOUNT
                 Constraint::Length(1),      // │
                 Constraint::Percentage(20), // INTERVAL
-            ])
-            .header(table_header)
-            .block(theme.block(" 🔄 Scheduled"))
-            .column_spacing(0)
-            .style(Style::default().bg(theme.background))
-            // Same inverted-accent highlight as transactions table
-            .highlight_style(
-                Style::default()
-                    .bg(theme.accent)
-                    .fg(theme.background)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("▶ ");
+            ],
+        )
+        .header(table_header)
+        .block(theme.block(" 🔄 Scheduled"))
+        .column_spacing(0)
+        .style(Style::default().bg(Color::Reset))
+        // Same inverted-accent highlight as transactions table
+        .highlight_style(
+            Style::default()
+                .bg(theme.accent)
+                .fg(theme.background)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ");
 
         f.render_stateful_widget(table, layout[1], &mut state);
     }
 
-    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD));
+    let key = |k: &'static str| {
+        Span::styled(
+            k,
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
     let label = |l: &'static str| Span::styled(l, theme.muted_text());
     let sep = || Span::styled("  ", theme.muted_text());
 
     let footer = Paragraph::new(Line::from(vec![
-        key("↑↓"), label(" Navigate"), sep(),
-        key("Space"), label(" Toggle active"), sep(),
-        key("d"), label(" Delete"), sep(),
-        key("Esc"), label(" Back"), sep(),
-        key("Tab"), label("/"), key("←→"), label(" Switch view"),
+        key("↑↓"),
+        label(" Navigate"),
+        sep(),
+        key("Space"),
+        label(" Toggle active"),
+        sep(),
+        key("d"),
+        label(" Delete"),
+        sep(),
+        key("Esc"),
+        label(" Back"),
+        sep(),
+        key("Tab"),
+        label("/"),
+        key("←→"),
+        label(" Switch view"),
     ]))
     .block(
         Block::default()
             .borders(ratatui::widgets::Borders::TOP)
             .border_style(Style::default().fg(theme.subtle))
-            .style(Style::default().bg(theme.background))
+            .style(Style::default().bg(Color::Reset))
             .padding(Padding::new(1, 1, 0, 0)),
     )
     .alignment(Alignment::Left);
@@ -638,23 +721,21 @@ fn draw_recurring_management(f: &mut Frame, area: Rect, app: &App, theme: &Theme
 // ---------------------------------------------------------------------------
 
 fn sep_cell(theme: &Theme) -> Cell<'static> {
-    Cell::from(Span::styled(
-        "│",
-        Style::default().fg(theme.subtle),
-    ))
+    Cell::from(Span::styled("│", Style::default().fg(theme.subtle)))
 }
 
 /// Separator cell with an explicit background — use inside transaction rows so
 /// the stripe color is consistent across the full row width including separators.
 fn sep_cell_bg(theme: &Theme, bg: ratatui::style::Color) -> Cell<'static> {
-    Cell::from(Span::styled(
-        "│",
-        Style::default().fg(theme.subtle).bg(bg),
-    ))
+    Cell::from(Span::styled("│", Style::default().fg(theme.subtle).bg(bg)))
 }
 
 /// Build a bold, center-aligned header cell with the given foreground color.
-fn centered_header_cell(label: &'static str, fg: ratatui::style::Color, _theme: &Theme) -> Cell<'static> {
+fn centered_header_cell(
+    label: &'static str,
+    fg: ratatui::style::Color,
+    _theme: &Theme,
+) -> Cell<'static> {
     Cell::from(
         Text::from(label)
             .alignment(Alignment::Center)
@@ -685,7 +766,7 @@ fn create_table_state(selected: usize) -> TableState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{Transaction, TransactionType, Tag, RecurringEntry, RecurringInterval};
+    use crate::models::{RecurringEntry, RecurringInterval, Tag, Transaction, TransactionType};
 
     #[test]
     fn truncate_string_short() {
@@ -720,8 +801,10 @@ mod tests {
             form: crate::form::TransactionForm::new(),
             editing: None,
             tags: vec![],
+            buckets: vec![],
             transactions: vec![],
             recurring_entries: vec![],
+            dashboard_dirty: false,
             selected: 0,
             selected_recurring: 0,
             currency: "$".into(),
@@ -742,13 +825,15 @@ mod tests {
             amount: 12.34,
             kind: TransactionType::Credit,
             tag: Tag("tag".into()),
+            bucket: "Baby".into(),
             date: "2026-02-25".into(),
+            related_transaction_id: None,
         };
 
-        let row = transaction_row(&tx, 12.34, &app, &theme, &app.currency, theme.background);
+        let row = transaction_row(&tx, &app, &theme, &app.currency, theme.background);
         let debug = format!("{:?}", row);
         assert!(debug.contains("Test"));
-        assert!(debug.contains("12.34"));
+        assert!(debug.contains("12"));
         assert!(debug.contains('│'));
         // No leading '#' on tag
         assert!(!debug.contains("#tag"));
@@ -764,8 +849,10 @@ mod tests {
             form: crate::form::TransactionForm::new(),
             editing: None,
             tags: vec![],
+            buckets: vec![],
             transactions: vec![],
             recurring_entries: vec![],
+            dashboard_dirty: false,
             selected: 0,
             selected_recurring: 0,
             currency: "$".into(),

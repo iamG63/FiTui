@@ -6,7 +6,7 @@ use ratatui::{
 use crate::{
     app::App,
     form::Field,
-    models::{RecurringInterval, TransactionType, Tag},
+    models::{RecurringInterval, Tag, TransactionType},
     theme::Theme,
 };
 
@@ -32,7 +32,6 @@ fn build_form_content(app: &App, theme: &Theme) -> Vec<Line<'static>> {
     let form = &app.form;
     vec![
         Line::raw(""),
-        
         create_form_field(
             "Source",
             &form.source,
@@ -61,29 +60,48 @@ fn build_form_content(app: &App, theme: &Theme) -> Vec<Line<'static>> {
         ),
         Line::raw(""),
         Line::raw(""),
-
         create_type_selector(&form.kind, form.active == Field::Kind, theme),
         Line::raw(""),
         create_tag_selector(&app.tags, form.tag_index, form.active == Field::Tag, theme),
         Line::raw(""),
+        create_bucket_selector(
+            &app.buckets,
+            form.bucket_index,
+            form.kind == TransactionType::Credit,
+            form.active == Field::Bucket,
+            theme,
+        ),
+        Line::raw(""),
         create_recurring_selector(form.recurring, form.active == Field::Recurring, theme),
         Line::raw(""),
-        create_recurring_interval_selector(&form.recurring_interval, form.active == Field::RecurringInterval, form.recurring, theme),
+        create_recurring_interval_selector(
+            &form.recurring_interval,
+            form.active == Field::RecurringInterval,
+            form.recurring,
+            theme,
+        ),
         Line::raw(""),
         Line::from(vec![
             Span::raw("  "),
             Span::styled("[", theme.muted_text()),
-            Span::styled("Tab", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Tab",
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("] Next  ", theme.muted_text()),
-            
             Span::styled("[", theme.muted_text()),
-            Span::styled("←→", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "←→",
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("] Toggle  ", theme.muted_text()),
-            
             Span::styled("[", theme.muted_text()),
             Span::styled("Enter", theme.success()),
             Span::styled("] Save  ", theme.muted_text()),
-            
             Span::styled("[", theme.muted_text()),
             Span::styled("Esc", theme.danger()),
             Span::styled("] Cancel", theme.muted_text()),
@@ -106,15 +124,15 @@ fn create_form_field(
     } else {
         value.to_string()
     };
-    
+
     let label_style = if is_active {
         Style::default()
             .fg(theme.accent)
             .add_modifier(Modifier::BOLD)
     } else {
-        theme.muted_text()
+        Style::default().fg(theme.foreground)
     };
-    
+
     let value_style = if is_active {
         Style::default()
             .fg(theme.foreground)
@@ -127,19 +145,24 @@ fn create_form_field(
     } else {
         Style::default().fg(theme.foreground)
     };
-    
-    let cursor = if is_active { 
+
+    let cursor = if is_active {
         Span::styled("│", theme.cursor_style())
-    } else { 
+    } else {
         Span::raw("")
     };
-    
+
     let indicator = if is_active {
-        Span::styled("▶ ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "▶ ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
         Span::raw("  ")
     };
-    
+
     Line::from(vec![
         indicator,
         Span::styled(format!("{:<9}", label), label_style),
@@ -149,30 +172,31 @@ fn create_form_field(
     ])
 }
 
-fn create_type_selector(
-    kind: &TransactionType,
-    is_active: bool,
-    theme: &Theme,
-) -> Line<'static> {
+fn create_type_selector(kind: &TransactionType, is_active: bool, theme: &Theme) -> Line<'static> {
     let (kind_icon, kind_label, kind_style) = match kind {
         TransactionType::Credit => ("↑", "Credit (Income)", theme.success()),
         TransactionType::Debit => ("↓", "Debit (Expense)", theme.danger()),
     };
-    
+
     let label_style = if is_active {
         Style::default()
             .fg(theme.accent)
             .add_modifier(Modifier::BOLD)
     } else {
-        theme.muted_text()
+        Style::default().fg(theme.foreground)
     };
-    
+
     let indicator = if is_active {
-        Span::styled("▶ ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "▶ ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
         Span::raw("  ")
     };
-    
+
     Line::from(vec![
         indicator,
         Span::styled("Type     ", label_style),
@@ -183,7 +207,9 @@ fn create_type_selector(
         Span::raw("  "),
         Span::styled(
             "← →",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         ),
     ])
 }
@@ -195,24 +221,29 @@ fn create_tag_selector(
     theme: &Theme,
 ) -> Line<'static> {
     let tag = tags.get(index).map(|t| t.as_str()).unwrap_or("other");
-    
+
     let label_style = if is_active {
         Style::default()
             .fg(theme.accent)
-            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            .add_modifier(Modifier::BOLD)
     } else {
-        theme.muted_text()
+        Style::default().fg(theme.foreground)
     };
-    
+
     let indicator = if is_active {
-        Span::styled("▶ ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "▶ ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
         Span::raw("  ")
     };
-    
+
     Line::from(vec![
         indicator,
-        Span::styled("Tag      ", label_style),
+        Span::styled("Category ", label_style),
         Span::styled("│ ", Style::default().fg(theme.subtle)),
         Span::styled(
             format!("#{}", tag),
@@ -223,7 +254,68 @@ fn create_tag_selector(
         Span::raw("  "),
         Span::styled(
             "← →",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
+fn create_bucket_selector(
+    buckets: &[String],
+    index: usize,
+    is_income: bool,
+    is_active: bool,
+    theme: &Theme,
+) -> Line<'static> {
+    let bucket = if is_income {
+        if index == 0 {
+            "All"
+        } else {
+            buckets
+                .get(index.saturating_sub(1))
+                .map(String::as_str)
+                .unwrap_or("All")
+        }
+    } else {
+        buckets.get(index).map(String::as_str).unwrap_or("Baby")
+    };
+
+    let label_style = if is_active {
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.foreground)
+    };
+
+    let indicator = if is_active {
+        Span::styled(
+            "▶ ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::raw("  ")
+    };
+
+    Line::from(vec![
+        indicator,
+        Span::styled("Bucket   ", label_style),
+        Span::styled("│ ", Style::default().fg(theme.subtle)),
+        Span::styled(
+            bucket.to_string(),
+            Style::default()
+                .fg(theme.accent_soft)
+                .add_modifier(Modifier::ITALIC | Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "← →",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         ),
     ])
 }
@@ -234,21 +326,26 @@ fn create_recurring_selector(recurring: bool, is_active: bool, theme: &Theme) ->
     } else {
         ("🚫", "No", Style::default().fg(theme.muted))
     };
-    
+
     let label_style = if is_active {
         Style::default()
             .fg(theme.accent)
-            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            .add_modifier(Modifier::BOLD)
     } else {
-        theme.muted_text()
+        Style::default().fg(theme.foreground)
     };
-    
+
     let indicator = if is_active {
-        Span::styled("▶ ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "▶ ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
         Span::raw("  ")
     };
-    
+
     Line::from(vec![
         indicator,
         Span::styled("Recurring", label_style),
@@ -259,34 +356,46 @@ fn create_recurring_selector(recurring: bool, is_active: bool, theme: &Theme) ->
         Span::raw("  "),
         Span::styled(
             "← →",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         ),
     ])
 }
 
-fn create_recurring_interval_selector(interval: &RecurringInterval, is_active: bool, is_recurring: bool, theme: &Theme) -> Line<'static> {
+fn create_recurring_interval_selector(
+    interval: &RecurringInterval,
+    is_active: bool,
+    is_recurring: bool,
+    theme: &Theme,
+) -> Line<'static> {
     let label_style = if is_active {
         Style::default()
             .fg(theme.accent)
             .add_modifier(Modifier::BOLD)
     } else {
-        theme.muted_text()
+        Style::default().fg(theme.foreground)
     };
-    
+
     let indicator = if is_active {
-        Span::styled("▶ ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "▶ ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
         Span::raw("  ")
     };
-    
+
     let interval_style = if is_recurring {
         Style::default().fg(theme.accent)
     } else {
         Style::default().fg(theme.muted)
     };
-    
+
     let interval_text = interval.display().to_string();
-    
+
     Line::from(vec![
         indicator,
         Span::styled("Interval", label_style),
@@ -296,10 +405,12 @@ fn create_recurring_interval_selector(interval: &RecurringInterval, is_active: b
         Span::styled(
             "← →",
             if is_active {
-                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.muted)
-            }
+            },
         ),
     ])
 }

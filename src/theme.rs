@@ -1,9 +1,9 @@
 #![allow(dead_code)]
-use serde::{Deserialize, Serialize};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders},
 };
+use serde::{Deserialize, Serialize};
 
 use crate::models::TransactionType;
 
@@ -89,7 +89,111 @@ pub fn parse_color(s: &str) -> Option<Color> {
     }
 }
 
+fn parse_kde_color(value: &str) -> Option<Color> {
+    if let Some(color) = parse_color(value) {
+        return Some(color);
+    }
+
+    let parts: Vec<u8> = value
+        .trim()
+        .split(',')
+        .map(|part| part.trim().parse::<u8>())
+        .collect::<Result<_, _>>()
+        .ok()?;
+
+    match parts.as_slice() {
+        [r, g, b] => Some(Color::Rgb(*r, *g, *b)),
+        _ => None,
+    }
+}
+
+fn parse_ini(
+    text: &str,
+) -> std::collections::HashMap<String, std::collections::HashMap<String, String>> {
+    let mut groups = std::collections::HashMap::new();
+    let mut current = String::new();
+
+    for line in text.lines() {
+        let line = line.trim();
+
+        if line.starts_with('[') && line.ends_with(']') {
+            current = line[1..line.len() - 1].to_string();
+        } else if !line.is_empty() && !line.starts_with('#') && !line.starts_with(';') {
+            if let Some((key, value)) = line.split_once('=') {
+                groups
+                    .entry(current.clone())
+                    .or_insert_with(std::collections::HashMap::new)
+                    .insert(key.trim().to_string(), value.trim().to_string());
+            }
+        }
+    }
+
+    groups
+}
+
+fn kde_value(
+    groups: &std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    group: &str,
+    key: &str,
+) -> Option<String> {
+    groups.get(group)?.get(key).cloned()
+}
+
 impl Theme {
+    /// Load colors from KDE's active color scheme.
+    pub fn from_kde() -> Option<Self> {
+        let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+        let kdeglobals = std::fs::read_to_string(home.join(".config/kdeglobals")).ok()?;
+        let kde = parse_ini(&kdeglobals);
+
+        let scheme = kde_value(&kde, "General", "ColorScheme")?;
+        let local = home
+            .join(".local/share/color-schemes")
+            .join(format!("{scheme}.colors"));
+        let system =
+            std::path::PathBuf::from("/usr/share/color-schemes").join(format!("{scheme}.colors"));
+
+        let palette_text = std::fs::read_to_string(&local)
+            .or_else(|_| std::fs::read_to_string(&system))
+            .ok()?;
+        let palette = parse_ini(&palette_text);
+
+        let get = |group: &str, key: &str| {
+            kde_value(&palette, group, key).and_then(|value| parse_kde_color(&value))
+        };
+
+        let accent = kde_value(&kde, "General", "AccentColor")
+            .and_then(|value| parse_kde_color(&value))
+            .or_else(|| get("Colors:Selection", "BackgroundNormal"))
+            .or_else(|| get("Colors:Window", "DecorationFocus"))?;
+
+        let background = get("Colors:View", "BackgroundNormal")?;
+        let foreground = get("Colors:View", "ForegroundNormal")
+            .or_else(|| get("Colors:Window", "ForegroundNormal"))?;
+
+        let surface = get("Colors:Button", "BackgroundNormal")
+            .or_else(|| get("Colors:Window", "BackgroundNormal"))
+            .unwrap_or(background);
+        let row_alt = get("Colors:View", "BackgroundAlternate").unwrap_or(surface);
+        let muted = get("Colors:View", "ForegroundInactive")
+            .or_else(|| get("Colors:Window", "ForegroundInactive"))
+            .unwrap_or(foreground);
+        let accent_soft = get("Colors:View", "DecorationHover").unwrap_or(accent);
+
+        Some(Self {
+            accent,
+            accent_soft,
+            credit: Color::Rgb(102, 187, 106),
+            debit: Color::Rgb(239, 83, 80),
+            muted,
+            subtle: muted,
+            background,
+            surface,
+            row_alt,
+            foreground,
+        })
+    }
+
     pub fn default() -> Self {
         Self {
             accent: Color::Rgb(100, 181, 246),
@@ -132,20 +236,20 @@ impl Theme {
         match name.to_lowercase().as_str() {
             "default" => Some(Self::default()),
             "dracula" => Some(Self {
-                accent: Color::Rgb(189, 147, 249),      // purple
-                accent_soft: Color::Rgb(98, 114, 164),  // comment/gray-blue
-                credit: Color::Rgb(80, 250, 123),       // green
-                debit: Color::Rgb(255, 85, 85),         // red
-                muted: Color::Rgb(98, 114, 164),        // comment
-                subtle: Color::Rgb(68, 71, 90),         // selection/darker gray
-                background: Color::Rgb(40, 42, 54),     // bg
-                surface: Color::Rgb(52, 55, 70),        // current line/surface
-                row_alt: Color::Rgb(45, 47, 59),        // midpoint
-                foreground: Color::Rgb(248, 248, 242),  // fg
+                accent: Color::Rgb(189, 147, 249),     // purple
+                accent_soft: Color::Rgb(98, 114, 164), // comment/gray-blue
+                credit: Color::Rgb(80, 250, 123),      // green
+                debit: Color::Rgb(255, 85, 85),        // red
+                muted: Color::Rgb(98, 114, 164),       // comment
+                subtle: Color::Rgb(68, 71, 90),        // selection/darker gray
+                background: Color::Rgb(40, 42, 54),    // bg
+                surface: Color::Rgb(52, 55, 70),       // current line/surface
+                row_alt: Color::Rgb(45, 47, 59),       // midpoint
+                foreground: Color::Rgb(248, 248, 242), // fg
             }),
             "nord" => Some(Self {
                 accent: Color::Rgb(136, 192, 208),      // frost blue (nord8)
-                accent_soft: Color::Rgb(129, 161, 193),  // medium frost blue (nord9)
+                accent_soft: Color::Rgb(129, 161, 193), // medium frost blue (nord9)
                 credit: Color::Rgb(163, 190, 140),      // green (nord14)
                 debit: Color::Rgb(191, 97, 106),        // red (nord11)
                 muted: Color::Rgb(76, 86, 106),         // polar night (nord3)
@@ -156,111 +260,118 @@ impl Theme {
                 foreground: Color::Rgb(216, 222, 233),  // snow storm (nord4)
             }),
             "gruvbox" | "gruvbox_dark" | "gruvbox-dark" => Some(Self {
-                accent: Color::Rgb(250, 189, 47),       // yellow
-                accent_soft: Color::Rgb(215, 153, 33),   // darker yellow
-                credit: Color::Rgb(184, 187, 38),       // green
-                debit: Color::Rgb(251, 73, 52),         // red
-                muted: Color::Rgb(146, 131, 116),       // gray
-                subtle: Color::Rgb(80, 73, 69),         // dark gray
-                background: Color::Rgb(40, 40, 40),      // bg0
-                surface: Color::Rgb(60, 56, 54),        // bg1
-                row_alt: Color::Rgb(50, 48, 47),        // midpoint
-                foreground: Color::Rgb(235, 219, 178),  // fg0
+                accent: Color::Rgb(250, 189, 47),      // yellow
+                accent_soft: Color::Rgb(215, 153, 33), // darker yellow
+                credit: Color::Rgb(184, 187, 38),      // green
+                debit: Color::Rgb(251, 73, 52),        // red
+                muted: Color::Rgb(146, 131, 116),      // gray
+                subtle: Color::Rgb(80, 73, 69),        // dark gray
+                background: Color::Rgb(40, 40, 40),    // bg0
+                surface: Color::Rgb(60, 56, 54),       // bg1
+                row_alt: Color::Rgb(50, 48, 47),       // midpoint
+                foreground: Color::Rgb(235, 219, 178), // fg0
             }),
             _ => None,
         }
     }
 
-        pub fn transaction_color(&self, tx_type: TransactionType) -> Color {
-            match tx_type {
-                TransactionType::Credit => self.credit,
-                TransactionType::Debit => self.debit,
-            }
-        }
-
-        pub fn danger(&self) -> Style {
-            Style::default()
-                .fg(self.debit)
-                .add_modifier(Modifier::BOLD)
-        }
-
-        pub fn success(&self) -> Style {
-            Style::default()
-                .fg(self.credit)
-                .add_modifier(Modifier::BOLD)
-        }
-
-        pub fn muted_text(&self) -> Style {
-            Style::default().fg(self.muted)
-        }
-
-        pub fn title(&self) -> Style {
-            Style::default()
-                .fg(self.accent)
-                .add_modifier(Modifier::BOLD)
-        }
-
-        pub fn highlight_style(&self) -> Style {
-            Style::default()
-                .bg(self.surface)
-                .fg(self.foreground)
-                .add_modifier(Modifier::BOLD)
-        }
-
-        pub fn cursor_style(&self) -> Style {
-            Style::default()
-                .fg(self.accent)
-        }
-
-        pub fn block<'a>(&self, title: &'a str) -> Block<'a> {
-            Block::default()
-                .title(Span::styled(title, self.title()))
-                .borders(Borders::ALL)
-                .border_set(ratatui::symbols::border::ROUNDED)
-                .border_style(Style::default().fg(self.accent_soft))
-        }
-
-        pub fn panel<'a>(&self) -> Block<'a> {
-            Block::default()
-                .borders(Borders::ALL)
-                .border_set(ratatui::symbols::border::ROUNDED)
-                .border_style(Style::default().fg(self.subtle))
-                .style(Style::default().bg(self.background))
-        }
-
-        pub fn popup<'a>(&self, title: &'a str) -> Block<'a> {
-            Block::default()
-                .title(Span::styled(title, self.title()))
-                .borders(Borders::ALL)
-                .border_set(ratatui::symbols::border::ROUNDED)
-                .border_style(Style::default().fg(self.accent))
-                .style(Style::default().bg(self.surface))
-        }
-
-        pub fn separator_span(&self) -> Span<'static> {
-            Span::styled(" │ ", Style::default().fg(self.subtle))
-        }
-
-        pub fn cursor_indicator(&self) -> Span<'static> {
-            Span::styled("►", Style::default().fg(self.accent).add_modifier(Modifier::BOLD))
-        }
-
-        pub fn bracket_open(&self) -> Span<'static> {
-            Span::styled("[", self.muted_text())
-        }
-
-        pub fn bracket_close(&self) -> Span<'static> {
-            Span::styled("] ", self.muted_text())
-        }
-
-        pub fn dimmed_span<'a>(&self, text: &'a str) -> Span<'a> {
-            Span::styled(text, Style::default().fg(self.muted))
-        }
-
-        pub fn highlight_span<'a>(&self, text: &'a str) -> Span<'a> {
-            Span::styled(text, Style::default().fg(self.accent).add_modifier(Modifier::BOLD))
+    pub fn transaction_color(&self, tx_type: TransactionType) -> Color {
+        match tx_type {
+            TransactionType::Credit => self.credit,
+            TransactionType::Debit => self.debit,
         }
     }
+
+    pub fn danger(&self) -> Style {
+        Style::default().fg(self.debit).add_modifier(Modifier::BOLD)
+    }
+
+    pub fn success(&self) -> Style {
+        Style::default()
+            .fg(self.credit)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    pub fn muted_text(&self) -> Style {
+        Style::default().fg(self.muted)
+    }
+
+    pub fn title(&self) -> Style {
+        Style::default()
+            .fg(self.accent)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    pub fn highlight_style(&self) -> Style {
+        Style::default()
+            .bg(self.surface)
+            .fg(self.foreground)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    pub fn cursor_style(&self) -> Style {
+        Style::default().fg(self.accent)
+    }
+
+    pub fn block<'a>(&self, title: &'a str) -> Block<'a> {
+        Block::default()
+            .title(Span::styled(title, self.title()))
+            .borders(Borders::ALL)
+            .border_set(ratatui::symbols::border::ROUNDED)
+            .border_style(Style::default().fg(self.accent_soft))
+    }
+
+    pub fn panel<'a>(&self) -> Block<'a> {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_set(ratatui::symbols::border::ROUNDED)
+            .border_style(Style::default().fg(self.subtle))
+            .style(Style::default().bg(self.background))
+    }
+
+    pub fn popup<'a>(&self, title: &'a str) -> Block<'a> {
+        Block::default()
+            .title(Span::styled(title, self.title()))
+            .borders(Borders::ALL)
+            .border_set(ratatui::symbols::border::ROUNDED)
+            .border_style(Style::default().fg(self.accent))
+            .style(Style::default().bg(self.surface))
+    }
+
+    pub fn separator_span(&self) -> Span<'static> {
+        Span::styled(" │ ", Style::default().fg(self.subtle))
+    }
+
+    pub fn cursor_indicator(&self) -> Span<'static> {
+        Span::styled(
+            "►",
+            Style::default()
+                .fg(self.accent)
+                .add_modifier(Modifier::BOLD),
+        )
+    }
+
+    pub fn bracket_open(&self) -> Span<'static> {
+        Span::styled("[", self.muted_text())
+    }
+
+    pub fn bracket_close(&self) -> Span<'static> {
+        Span::styled("] ", self.muted_text())
+    }
+
+    pub fn dimmed_span<'a>(&self, text: &'a str) -> Span<'a> {
+        Span::styled(text, Style::default().fg(self.muted))
+    }
+
+    pub fn highlight_span<'a>(&self, text: &'a str) -> Span<'a> {
+        Span::styled(
+            text,
+            Style::default()
+                .fg(self.accent)
+                .add_modifier(Modifier::BOLD),
+        )
+    }
+}
 
 #[cfg(test)]
 mod theme_tests {
@@ -273,7 +384,10 @@ mod theme_tests {
         assert_eq!(parse_color("#ffffff"), Some(Color::Rgb(255, 255, 255)));
         assert_eq!(parse_color("#123"), Some(Color::Rgb(17, 34, 51)));
         assert_eq!(parse_color("rgb(10, 20, 30)"), Some(Color::Rgb(10, 20, 30)));
-        assert_eq!(parse_color("rgb( 100 , 200 , 255 )"), Some(Color::Rgb(100, 200, 255)));
+        assert_eq!(
+            parse_color("rgb( 100 , 200 , 255 )"),
+            Some(Color::Rgb(100, 200, 255))
+        );
         assert_eq!(parse_color("invalid"), None);
         assert_eq!(parse_color("#12"), None);
         assert_eq!(parse_color("#1234567"), None);

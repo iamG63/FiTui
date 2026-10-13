@@ -1,6 +1,6 @@
 use ratatui::{
     prelude::*,
-    widgets::{Clear, Paragraph, Padding},
+    widgets::{Clear, Padding, Paragraph},
 };
 
 use crate::{
@@ -19,26 +19,41 @@ pub fn draw_filter_popup(f: &mut Frame, app: &App, theme: &Theme) {
 
     // 1. Start Date Field line
     let start_label_style = if start_active {
-        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD)
     } else {
         theme.muted_text()
     };
-    
+
     let start_val_style = if start_active {
-        Style::default().fg(theme.foreground).bg(theme.surface).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.foreground)
+            .bg(theme.surface)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.foreground)
     };
 
     let start_indicator = if start_active {
-        Span::styled("▶ ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "▶ ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
         Span::raw("  ")
     };
 
     let mut start_value_spans = Vec::new();
     if filter.start_date.is_empty() && !start_active {
-        start_value_spans.push(Span::styled("YYYY-MM-DD (Start Date)", Style::default().fg(theme.subtle).add_modifier(Modifier::ITALIC)));
+        start_value_spans.push(Span::styled(
+            "YYYY-MM-DD (Start Date)",
+            Style::default()
+                .fg(theme.subtle)
+                .add_modifier(Modifier::ITALIC),
+        ));
     } else {
         start_value_spans.push(Span::styled(filter.start_date.clone(), start_val_style));
         if start_active {
@@ -47,7 +62,12 @@ pub fn draw_filter_popup(f: &mut Frame, app: &App, theme: &Theme) {
         if filter.start_date.len() < 10 {
             let mask = "YYYY-MM-DD";
             let remaining = &mask[filter.start_date.len()..];
-            start_value_spans.push(Span::styled(remaining.to_string(), Style::default().fg(theme.subtle).add_modifier(Modifier::ITALIC)));
+            start_value_spans.push(Span::styled(
+                remaining.to_string(),
+                Style::default()
+                    .fg(theme.subtle)
+                    .add_modifier(Modifier::ITALIC),
+            ));
         }
     }
 
@@ -64,26 +84,41 @@ pub fn draw_filter_popup(f: &mut Frame, app: &App, theme: &Theme) {
 
     // 2. End Date Field line
     let end_label_style = if end_active {
-        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD)
     } else {
         theme.muted_text()
     };
-    
+
     let end_val_style = if end_active {
-        Style::default().fg(theme.foreground).bg(theme.surface).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.foreground)
+            .bg(theme.surface)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.foreground)
     };
 
     let end_indicator = if end_active {
-        Span::styled("▶ ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "▶ ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
         Span::raw("  ")
     };
 
     let mut end_value_spans = Vec::new();
     if filter.end_date.is_empty() && !end_active {
-        end_value_spans.push(Span::styled("YYYY-MM-DD (End Date)", Style::default().fg(theme.subtle).add_modifier(Modifier::ITALIC)));
+        end_value_spans.push(Span::styled(
+            "YYYY-MM-DD (End Date)",
+            Style::default()
+                .fg(theme.subtle)
+                .add_modifier(Modifier::ITALIC),
+        ));
     } else {
         end_value_spans.push(Span::styled(filter.end_date.clone(), end_val_style));
         if end_active {
@@ -92,7 +127,12 @@ pub fn draw_filter_popup(f: &mut Frame, app: &App, theme: &Theme) {
         if filter.end_date.len() < 10 {
             let mask = "YYYY-MM-DD";
             let remaining = &mask[filter.end_date.len()..];
-            end_value_spans.push(Span::styled(remaining.to_string(), Style::default().fg(theme.subtle).add_modifier(Modifier::ITALIC)));
+            end_value_spans.push(Span::styled(
+                remaining.to_string(),
+                Style::default()
+                    .fg(theme.subtle)
+                    .add_modifier(Modifier::ITALIC),
+            ));
         }
     }
 
@@ -114,19 +154,31 @@ pub fn draw_filter_popup(f: &mut Frame, app: &App, theme: &Theme) {
     };
 
     let tag_label_style = if tag_active {
-        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD)
     } else {
         theme.muted_text()
     };
 
     let tag_val_style = if tag_active {
-        Style::default().fg(theme.foreground).bg(theme.surface).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.foreground)
+            .bg(theme.surface)
+            .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(theme.accent_soft).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.accent_soft)
+            .add_modifier(Modifier::BOLD)
     };
 
     let tag_indicator = if tag_active {
-        Span::styled("▶ ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "▶ ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
         Span::raw("  ")
     };
@@ -140,17 +192,24 @@ pub fn draw_filter_popup(f: &mut Frame, app: &App, theme: &Theme) {
         Span::styled(
             "← →",
             if tag_active {
-                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.muted)
-            }
+            },
         ),
     ]);
 
     // Content builder
     let content = vec![
         Line::raw(""),
-        Line::styled(" Filter Transactions", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+        Line::styled(
+            " Filter Transactions",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
         Line::styled(" ───────────────────", Style::default().fg(theme.subtle)),
         Line::raw(""),
         start_line,
@@ -164,13 +223,16 @@ pub fn draw_filter_popup(f: &mut Frame, app: &App, theme: &Theme) {
         Line::from(vec![
             Span::raw("  "),
             Span::styled("[", theme.muted_text()),
-            Span::styled("Tab", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Tab",
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("] Focus  ", theme.muted_text()),
-            
             Span::styled("[", theme.muted_text()),
             Span::styled("Enter", theme.success()),
             Span::styled("] Apply  ", theme.muted_text()),
-            
             Span::styled("[", theme.muted_text()),
             Span::styled("Esc", theme.danger()),
             Span::styled("] Cancel", theme.muted_text()),

@@ -77,8 +77,10 @@ pub struct App {
     pub form: TransactionForm,
     pub editing: Option<i32>,
     pub tags: Vec<Tag>,
+    pub buckets: Vec<String>,
     pub transactions: Vec<Transaction>,
     pub recurring_entries: Vec<RecurringEntry>,
+    pub dashboard_dirty: bool,
     pub selected: usize,
     pub selected_recurring: usize,
     pub currency: String,
@@ -111,8 +113,8 @@ impl App {
             2 => {
                 // make sure selection doesn't go out of bounds when
                 // entering recurring view
-                if self.selected_recurring >= self.recurring_entries.len() &&
-                    self.selected_recurring > 0
+                if self.selected_recurring >= self.recurring_entries.len()
+                    && self.selected_recurring > 0
                 {
                     self.selected_recurring = self.recurring_entries.len() - 1;
                 }
@@ -140,11 +142,16 @@ impl App {
     pub fn new(conn: &Connection) -> Self {
         let config = load_config();
 
-        let tags: Vec<Tag> = config
-            .tags
-            .into_iter()
-            .map(|s| Tag::from_str(&s))
-            .collect();
+        let tags: Vec<Tag> = config.tags.into_iter().map(|s| Tag::from_str(&s)).collect();
+
+        let buckets = vec![
+            "Baby".to_string(),
+            "Electricity Baby".to_string(),
+            "Personal".to_string(),
+            "Travel".to_string(),
+            "Saving".to_string(),
+            "Date".to_string(),
+        ];
 
         let transactions = db::get_transactions(conn).unwrap_or_default();
         let recurring_entries = db::get_recurring_entries(conn).unwrap_or_default();
@@ -154,10 +161,18 @@ impl App {
             match Theme::from_config(custom_config) {
                 Ok(t) => t,
                 Err(err) => {
-                    eprintln!("Error parsing custom theme '{}': {}. Falling back to default.", theme_name, err);
+                    eprintln!(
+                        "Error parsing custom theme '{}': {}. Falling back to default.",
+                        theme_name, err
+                    );
                     Theme::default()
                 }
             }
+        } else if theme_name.eq_ignore_ascii_case("default")
+            || theme_name.eq_ignore_ascii_case("material-you")
+            || theme_name.eq_ignore_ascii_case("material_you")
+        {
+            Theme::from_kde().unwrap_or_else(Theme::default)
         } else if let Some(preconfigured) = Theme::get_preconfigured(theme_name) {
             preconfigured
         } else {
@@ -170,8 +185,10 @@ impl App {
             form: TransactionForm::new(),
             editing: None,
             tags,
+            buckets,
             transactions,
             recurring_entries,
+            dashboard_dirty: true,
             selected: 0,
             selected_recurring: 0,
             currency: config.currency,
@@ -188,6 +205,7 @@ impl App {
     }
 
     pub fn refresh(&mut self, conn: &Connection) {
+        self.dashboard_dirty = true;
         self.transactions = db::get_transactions(conn).unwrap_or_default();
         self.recurring_entries = db::get_recurring_entries(conn).unwrap_or_default();
 
@@ -197,14 +215,38 @@ impl App {
         }
     }
 
-    pub fn save_transaction(&mut self, conn: &Connection) {
-        let amount: f64 = self.form.amount.trim().parse().unwrap_or(0.0);
+    pub fn save_transaction(&mut self, conn: &Connection) -> Result<(), String> {
+        let amount: f64 = self
+            .form
+            .amount
+            .trim()
+            .replace('.', "")
+            .parse()
+            .map_err(|_| "Số tiền không hợp lệ".to_string())?;
+        if !amount.is_finite() || amount <= 0.0 {
+            return Err("Số tiền phải lớn hơn 0".into());
+        }
 
         let tag = self
             .tags
             .get(self.form.tag_index)
             .unwrap_or(&Tag("other".into()))
             .clone();
+        let bucket = if self.form.kind == crate::models::TransactionType::Credit {
+            if self.form.bucket_index == 0 {
+                "All".to_string()
+            } else {
+                self.buckets
+                    .get(self.form.bucket_index.saturating_sub(1))
+                    .cloned()
+                    .unwrap_or_else(|| "All".to_string())
+            }
+        } else {
+            self.buckets
+                .get(self.form.bucket_index)
+                .cloned()
+                .unwrap_or_default()
+        };
 
         if let Some(id) = self.editing {
             db::update_transaction(
@@ -214,21 +256,36 @@ impl App {
                 amount,
                 self.form.kind,
                 &tag,
+                &bucket,
                 &self.form.date,
             )
-            .unwrap();
-
-            self.editing = None;
+            .map_err(|e| e.to_string())?;
         } else {
-            db::add_transaction(
-                conn,
-                &self.form.source,
-                amount,
-                self.form.kind,
-                &tag,
-                &self.form.date,
-            )
-            .unwrap();
+            if self.form.kind == crate::models::TransactionType::Debit
+                && matches!(bucket.as_str(), "Baby" | "Electricity Baby")
+            {
+                db::add_transaction_with_waterfall(
+                    conn,
+                    &self.form.source,
+                    amount,
+                    self.form.kind,
+                    &tag,
+                    &bucket,
+                    &self.form.date,
+                )
+                .map_err(|e| e.to_string())?;
+            } else {
+                db::add_transaction(
+                    conn,
+                    &self.form.source,
+                    amount,
+                    self.form.kind,
+                    &tag,
+                    &bucket,
+                    &self.form.date,
+                )
+                .map_err(|e| e.to_string())?;
+            }
 
             if self.form.recurring {
                 db::add_recurring_entry(
@@ -240,35 +297,52 @@ impl App {
                     &self.form.recurring_interval,
                     &self.form.date,
                 )
-                .unwrap();
+                .map_err(|e| e.to_string())?;
             }
         }
 
+        self.editing = None;
         self.refresh(conn);
+        Ok(())
+    }
+
+    pub fn open_info_popup(&mut self, title: &str, message: String) {
+        self.popup = Some(PopupKind::Info {
+            title: title.into(),
+            message,
+        });
+
+        self.mode = Mode::Popup;
+    }
+
+    pub fn close_popup(&mut self) {
+        self.popup = None;
+        self.mode = Mode::Normal;
     }
 
     pub fn get_filtered_transactions(&self) -> Vec<Transaction> {
-        if !self.filter.active {
-            return self.transactions.clone();
-        }
         self.transactions
             .iter()
+            .filter(|tx| tx.related_transaction_id.is_none())
             .filter(|tx| {
+                if !self.filter.active {
+                    return true;
+                }
+
                 if let Some(tag_idx) = self.filter.tag_index {
                     if tx.tag.as_str() != self.tags[tag_idx].as_str() {
                         return false;
                     }
                 }
-                if !self.filter.start_date.is_empty() {
-                    if tx.date < self.filter.start_date {
-                        return false;
-                    }
+
+                if !self.filter.start_date.is_empty() && tx.date < self.filter.start_date {
+                    return false;
                 }
-                if !self.filter.end_date.is_empty() {
-                    if tx.date > self.filter.end_date {
-                        return false;
-                    }
+
+                if !self.filter.end_date.is_empty() && tx.date > self.filter.end_date {
+                    return false;
                 }
+
                 true
             })
             .cloned()
@@ -282,7 +356,7 @@ impl App {
         };
 
         self.form.source = tx.source.clone();
-        self.form.amount = format!("{:.2}", tx.amount);
+        self.form.amount = crate::money::format_vnd(tx.amount);
         self.form.kind = tx.kind;
 
         self.form.tag_index = self
@@ -291,14 +365,27 @@ impl App {
             .position(|t| t.as_str() == tx.tag.as_str())
             .unwrap_or(0);
 
+        self.form.bucket_index = if tx.kind == crate::models::TransactionType::Credit {
+            if tx.bucket == "All" {
+                0
+            } else {
+                self.buckets
+                    .iter()
+                    .position(|b| b == &tx.bucket)
+                    .map(|i| i + 1)
+                    .unwrap_or(0)
+            }
+        } else {
+            self.buckets
+                .iter()
+                .position(|b| b == &tx.bucket)
+                .unwrap_or(0)
+        };
         self.form.date = tx.date.clone();
         self.form.active = crate::form::Field::Source;
 
         let recurring_entry = self.recurring_entries.iter().find(|r| {
-            r.source == tx.source
-                && r.amount == tx.amount
-                && r.kind == tx.kind
-                && r.tag == tx.tag
+            r.source == tx.source && r.amount == tx.amount && r.kind == tx.kind && r.tag == tx.tag
         });
 
         if let Some(entry) = recurring_entry {
@@ -320,12 +407,7 @@ impl App {
         }
     }
 
-    pub fn open_confirm_popup(
-        &mut self,
-        title: &str,
-        message: String,
-        action: PopupAction,
-    ) {
+    pub fn open_confirm_popup(&mut self, title: &str, message: String, action: PopupAction) {
         self.popup = Some(PopupKind::Confirm {
             title: title.into(),
             message,
@@ -333,20 +415,6 @@ impl App {
         });
 
         self.mode = Mode::Popup;
-    }
-
-    pub fn open_info_popup(&mut self, title: &str, message: String) {
-        self.popup = Some(PopupKind::Info {
-            title: title.into(),
-            message,
-        });
-
-        self.mode = Mode::Popup;
-    }
-
-    pub fn close_popup(&mut self) {
-        self.popup = None;
-        self.mode = Mode::Normal;
     }
 
     pub fn selected_transaction(&self) -> Option<Transaction> {
@@ -415,15 +483,17 @@ mod tests {
     #[test]
     fn test_transaction_filtering() {
         let mut app = base_app();
-        use crate::models::{Transaction, TransactionType, Tag};
-        
+        use crate::models::{Tag, Transaction, TransactionType};
+
         let tx1 = Transaction {
             id: 1,
             source: "Food shop".into(),
             amount: 50.0,
             kind: TransactionType::Debit,
             tag: Tag("food".into()),
+            bucket: "Baby".into(),
             date: "2024-02-10".into(),
+            related_transaction_id: None,
         };
         let tx2 = Transaction {
             id: 2,
@@ -431,7 +501,9 @@ mod tests {
             amount: 2000.0,
             kind: TransactionType::Credit,
             tag: Tag("salary".into()),
+            bucket: "Baby".into(),
             date: "2024-02-15".into(),
+            related_transaction_id: None,
         };
         let tx3 = Transaction {
             id: 3,
@@ -439,15 +511,17 @@ mod tests {
             amount: 15.0,
             kind: TransactionType::Debit,
             tag: Tag("ops".into()),
+            bucket: "Baby".into(),
             date: "2024-03-01".into(),
+            related_transaction_id: None,
         };
-        
+
         app.transactions = vec![tx1, tx2, tx3];
         app.tags = vec![Tag("food".into()), Tag("salary".into()), Tag("ops".into())];
-        
+
         // Initially no filter
         assert_eq!(app.get_filtered_transactions().len(), 3);
-        
+
         // Filter by start_date
         app.filter.active = true;
         app.filter.start_date = "2024-02-11".into();
@@ -455,18 +529,18 @@ mod tests {
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].source, "Salary");
         assert_eq!(filtered[1].source, "Hosting");
-        
+
         // Filter by start_date and end_date range
         app.filter.end_date = "2024-02-28".into();
         let filtered = app.get_filtered_transactions();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].source, "Salary");
-        
+
         // Filter by range and tag
         app.filter.tag_index = Some(0); // "food"
         let filtered = app.get_filtered_transactions();
         assert_eq!(filtered.len(), 0); // "food" is 2024-02-10, outside range
-        
+
         // Clear filter
         app.filter.active = false;
         assert_eq!(app.get_filtered_transactions().len(), 3);

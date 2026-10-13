@@ -41,7 +41,9 @@ pub struct Transaction {
     pub amount: f64,
     pub kind: TransactionType,
     pub tag: Tag,
+    pub bucket: String,
     pub date: String,
+    pub related_transaction_id: Option<i32>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum RecurringInterval {
@@ -104,4 +106,23 @@ pub struct RecurringEntry {
     pub original_date: String, // Format: "YYYY-MM-DD" - date when recurring entry was created
     pub last_inserted_date: String, // Format: depends on interval (YYYY-MM-DD for daily, YYYY-Www for weekly, YYYY-MM for monthly)
     pub active: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct MonthlyBudget {
+    pub month: String,
+    pub bucket: String,
+    pub budget: f64,
+    pub spent_tracking: bool,
+    pub spent_override: Option<f64>,
+    pub remaining_override: Option<f64>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct MonthlyIncome {
+    pub month: String,
+    pub income: f64,
+    pub status: String,
+    pub last_edited: String,
 }

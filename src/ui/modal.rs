@@ -10,18 +10,18 @@ use crate::{
 
 pub fn draw_popup(f: &mut Frame, app: &App, theme: &Theme) {
     if let Some(popup) = &app.popup {
-        let area = centered_rect(super::POPUP_WIDTH_PERCENT, super::POPUP_HEIGHT_PERCENT, f.size());
+        let area = centered_rect(
+            super::POPUP_WIDTH_PERCENT,
+            super::POPUP_HEIGHT_PERCENT,
+            f.size(),
+        );
 
         // Clear behind popup with slight shadow effect
         f.render_widget(Clear, area);
 
         let (title, lines, is_confirm) = match popup {
-            PopupKind::Confirm { title, message, .. } => {
-                (title.as_str(), message.clone(), true)
-            }
-            PopupKind::Info { title, message } => {
-                (title.as_str(), message.clone(), false)
-            }
+            PopupKind::Confirm { title, message, .. } => (title.as_str(), message.clone(), true),
+            PopupKind::Info { title, message } => (title.as_str(), message.clone(), false),
         };
 
         // Enhanced styled button row with better visual separation
@@ -29,19 +29,34 @@ pub fn draw_popup(f: &mut Frame, app: &App, theme: &Theme) {
             Line::from(vec![
                 Span::raw("   "),
                 theme.bracket_open(),
-                Span::styled("y", Style::default().fg(theme.credit).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "y",
+                    Style::default()
+                        .fg(theme.credit)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 theme.bracket_close(),
                 Span::styled("Yes", theme.success()),
                 Span::raw("      "),
                 theme.bracket_open(),
-                Span::styled("n", Style::default().fg(theme.debit).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "n",
+                    Style::default()
+                        .fg(theme.debit)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 theme.bracket_close(),
                 Span::styled("No", theme.danger()),
             ])
         } else {
             Line::from(vec![
                 theme.bracket_open(),
-                Span::styled("Esc", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Esc",
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 theme.bracket_close(),
                 Span::styled("Close", theme.muted_text()),
             ])
@@ -55,7 +70,7 @@ pub fn draw_popup(f: &mut Frame, app: &App, theme: &Theme) {
                 lines,
                 Style::default()
                     .fg(theme.foreground)
-                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::BOLD),
             ),
             Line::raw(""),
             Line::raw(""),

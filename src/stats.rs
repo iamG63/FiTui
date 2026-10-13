@@ -1,8 +1,16 @@
-use std::collections::{ BTreeMap, HashMap };
-use ratatui::{ prelude::*, widgets::{ BarChart, Block, Paragraph } };
 use crossterm::event::KeyCode;
+use ratatui::{
+    prelude::*,
+    widgets::{BarChart, Block, Paragraph},
+};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::{ app::App, models::{ Tag, Transaction, TransactionType }, theme::Theme };
+use crate::{
+    app::App,
+    models::{MonthlyBudget, MonthlyIncome, Tag, Transaction, TransactionType},
+    money,
+    theme::Theme,
+};
 pub struct StatsSnapshot {
     pub earned: f64,
     pub spent: f64,
@@ -26,7 +34,10 @@ impl StatsSnapshot {
         let per_tag = calculate_spent_per_tag(transactions);
         let monthly_history = calculate_monthly_history(transactions);
 
-        let tx_count = transactions.len();
+        let tx_count = transactions
+            .iter()
+            .filter(|tx| tx.related_transaction_id.is_none())
+            .count();
         let largest = get_largest_transaction(transactions);
         let smallest = get_smallest_transaction(transactions);
 
@@ -54,16 +65,23 @@ impl StatsSnapshot {
 pub fn calculate_earned(transactions: &[Transaction]) -> f64 {
     transactions
         .iter()
-        .filter(|tx| tx.kind == TransactionType::Credit)
+        .filter(|tx| tx.kind == TransactionType::Credit && tx.related_transaction_id.is_none())
         .map(|tx| tx.amount)
         .sum()
 }
 
 /// Calculate total spent transactions from app transactions
+pub fn new_with_archived_spent(transactions: &[Transaction], archived_spent: f64) -> StatsSnapshot {
+    let mut snapshot = StatsSnapshot::new(transactions);
+    // Balance reflects live transactions, not archived historical spending.
+    snapshot.balance = snapshot.earned - calculate_spent(transactions);
+    snapshot
+}
+
 pub fn calculate_spent(transactions: &[Transaction]) -> f64 {
     transactions
         .iter()
-        .filter(|tx| tx.kind == TransactionType::Debit)
+        .filter(|tx| tx.kind == TransactionType::Debit && tx.related_transaction_id.is_none())
         .map(|tx| tx.amount)
         .sum()
 }
@@ -71,7 +89,10 @@ pub fn calculate_spent(transactions: &[Transaction]) -> f64 {
 /// Build a map of spending per tag from all debit transactions
 pub fn calculate_spent_per_tag(transactions: &[Transaction]) -> HashMap<Tag, f64> {
     let mut map = HashMap::new();
-    for tx in transactions.iter().filter(|tx| tx.kind == TransactionType::Debit) {
+    for tx in transactions
+        .iter()
+        .filter(|tx| tx.kind == TransactionType::Debit && tx.related_transaction_id.is_none())
+    {
         *map.entry(tx.tag.clone()).or_insert(0.0) += tx.amount;
     }
     map
@@ -81,7 +102,12 @@ pub fn calculate_spent_per_tag(transactions: &[Transaction]) -> HashMap<Tag, f64
 pub fn get_largest_transaction(transactions: &[Transaction]) -> Option<Transaction> {
     transactions
         .iter()
-        .max_by(|a, b| a.amount.partial_cmp(&b.amount).unwrap_or(std::cmp::Ordering::Equal))
+        .filter(|tx| tx.related_transaction_id.is_none())
+        .max_by(|a, b| {
+            a.amount
+                .partial_cmp(&b.amount)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .cloned()
 }
 
@@ -89,17 +115,19 @@ pub fn get_largest_transaction(transactions: &[Transaction]) -> Option<Transacti
 pub fn get_smallest_transaction(transactions: &[Transaction]) -> Option<Transaction> {
     transactions
         .iter()
-        .min_by(|a, b| a.amount.partial_cmp(&b.amount).unwrap_or(std::cmp::Ordering::Equal))
+        .filter(|tx| tx.related_transaction_id.is_none())
+        .min_by(|a, b| {
+            a.amount
+                .partial_cmp(&b.amount)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .cloned()
 }
 
 /// Get top tags sorted by spending amount
 pub fn get_top_tags(per_tag: &HashMap<Tag, f64>) -> Vec<(Tag, f64)> {
-    let mut top_tags: Vec<(Tag, f64)> = per_tag
-        .iter()
-        .map(|(t, v)| (t.clone(), *v))
-        .collect();
-    top_tags.sort_by(|a, b| { b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal) });
+    let mut top_tags: Vec<(Tag, f64)> = per_tag.iter().map(|(t, v)| (t.clone(), *v)).collect();
+    top_tags.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     top_tags
 }
 
@@ -108,8 +136,15 @@ pub fn get_top_tags(per_tag: &HashMap<Tag, f64>) -> Vec<(Tag, f64)> {
 pub fn calculate_monthly_history(transactions: &[Transaction]) -> Vec<(String, f64, f64)> {
     let mut monthly_map: BTreeMap<String, (f64, f64)> = BTreeMap::new();
 
-    for tx in transactions {
-        let month = if tx.date.len() >= 7 { tx.date[..7].to_string() } else { tx.date.clone() };
+    for tx in transactions
+        .iter()
+        .filter(|tx| tx.related_transaction_id.is_none())
+    {
+        let month = if tx.date.len() >= 7 {
+            tx.date[..7].to_string()
+        } else {
+            tx.date.clone()
+        };
 
         let entry = monthly_map.entry(month).or_insert((0.0, 0.0));
 
@@ -135,12 +170,29 @@ pub fn calculate_monthly_history(transactions: &[Transaction]) -> Vec<(String, f
 // Stats UI rendering functions
 // ============================================================================
 
-pub fn draw_stats_view(f: &mut Frame, area: Rect, snapshot: &StatsSnapshot, theme: &Theme, currency: &str) {
-    let earned = snapshot.earned;
-    let spent = snapshot.spent;
-    let balance = snapshot.balance;
+pub fn draw_stats_view(
+    f: &mut Frame,
+    area: Rect,
+    snapshot: &StatsSnapshot,
+    transactions: &[Transaction],
+    theme: &Theme,
+    currency: &str,
+    configured_tags: &[Tag],
+    monthly_budgets: &[MonthlyBudget],
+    monthly_income: Option<&MonthlyIncome>,
+) {
+    let current_month = chrono::Local::now().format("%Y-%m").to_string();
+    let monthly_transactions: Vec<Transaction> = transactions
+        .iter()
+        .filter(|tx| tx.date.get(..7) == Some(current_month.as_str()))
+        .cloned()
+        .collect();
 
-    let per_tag = &snapshot.per_tag;
+    let earned = calculate_earned(&monthly_transactions);
+    let spent = calculate_spent(&monthly_transactions);
+    let balance = earned - spent;
+    let monthly_per_tag = calculate_spent_per_tag(&monthly_transactions);
+    let per_tag = &monthly_per_tag;
     let monthly_history = &snapshot.monthly_history;
 
     let tx_count = snapshot.tx_count;
@@ -166,10 +218,11 @@ pub fn draw_stats_view(f: &mut Frame, area: Rect, snapshot: &StatsSnapshot, them
     let charts_area = top_bottom[0];
     let breakdown_area = top_bottom[1];
 
-    // Charts area: left = monthly history, right = top tags
+    // Monthly history chart uses the full width; Top Tags is hidden
+    // because Spending Breakdown already shows category totals.
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .constraints([Constraint::Percentage(100)])
         .split(charts_area);
 
     // Prepare monthly bars and sparkline
@@ -183,10 +236,7 @@ pub fn draw_stats_view(f: &mut Frame, area: Rect, snapshot: &StatsSnapshot, them
     }
 
     // Labels as &str for BarChart
-    let month_label_refs: Vec<&str> = month_labels
-        .iter()
-        .map(|s| s.as_str())
-        .collect();
+    let month_label_refs: Vec<&str> = month_labels.iter().map(|s| s.as_str()).collect();
 
     // Monthly earned bar chart
     let monthly_earned: Vec<(&str, u64)> = month_label_refs
@@ -195,7 +245,12 @@ pub fn draw_stats_view(f: &mut Frame, area: Rect, snapshot: &StatsSnapshot, them
         .map(|(l, v)| (*l, *v))
         .collect();
 
-    let max_month = earned_vals.iter().chain(spent_vals.iter()).copied().max().unwrap_or(0);
+    let max_month = earned_vals
+        .iter()
+        .chain(spent_vals.iter())
+        .copied()
+        .max()
+        .unwrap_or(0);
 
     let earned_chart = BarChart::default()
         .data(&monthly_earned)
@@ -207,48 +262,23 @@ pub fn draw_stats_view(f: &mut Frame, area: Rect, snapshot: &StatsSnapshot, them
 
     f.render_widget(earned_chart, cols[0]);
 
-    // Right column: top tags bar chart
-    let mut tag_labels: Vec<String> = Vec::new();
-    let mut tag_vals: Vec<u64> = Vec::new();
-    for (t, v) in top_tags.iter().take(6) {
-        tag_labels.push(t.as_str().to_string());
-        tag_vals.push((*v).round().abs() as u64);
-    }
-    let tag_label_refs: Vec<&str> = tag_labels
-        .iter()
-        .map(|s| s.as_str())
-        .collect();
-    let tag_bars: Vec<(&str, u64)> = tag_label_refs
-        .iter()
-        .zip(tag_vals.iter())
-        .map(|(l, v)| (*l, *v))
-        .collect();
-
-    let max_tag = tag_vals.iter().copied().max().unwrap_or(0);
-
-    let tags_chart = BarChart::default()
-        .data(&tag_bars)
-        .block(Block::default().title("Top Tags").borders(ratatui::widgets::Borders::ALL))
-        .max(max_tag.max(1))
-        .bar_width(6)
-        .bar_gap(1)
-        .bar_style(Style::default().fg(theme.debit));
-
-    f.render_widget(tags_chart, cols[1]);
-
     // Below charts: breakdown paragraph (reuse existing content builder for details)
     let breakdown_lines = build_stats_content(
         earned,
         spent,
         balance,
         per_tag,
+        configured_tags,
         monthly_history,
         tx_count,
+        &monthly_transactions,
         largest,
         smallest,
         top_tags,
         theme,
-        currency
+        currency,
+        monthly_budgets,
+        monthly_income,
     );
     let breakdown = Paragraph::new(breakdown_lines)
         .block(theme.block("Details"))
@@ -260,20 +290,47 @@ pub fn draw_stats_view(f: &mut Frame, area: Rect, snapshot: &StatsSnapshot, them
     let footer_block = Block::default()
         .borders(ratatui::widgets::Borders::TOP)
         .border_style(Style::default().fg(theme.subtle))
-        .style(Style::default().bg(theme.background))
+        .style(Style::default().bg(Color::Reset))
         .padding(ratatui::widgets::Padding::new(1, 1, 0, 0));
 
-    let footer = Paragraph::new(
-        Line::from(vec![
-            Span::styled("  [Esc] Back", Style::default().fg(theme.muted)),
-            Span::styled("  ", Style::default()),
-            Span::styled("[Tab/←→] Switch view", Style::default().fg(theme.muted)),
-        ])
-    )
-        .block(footer_block)
-        .alignment(Alignment::Left);
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled("  [Esc] Back", Style::default().fg(theme.muted)),
+        Span::styled("  ", Style::default()),
+        Span::styled("[Tab/←→] Switch view", Style::default().fg(theme.muted)),
+    ]))
+    .block(footer_block)
+    .alignment(Alignment::Left);
 
     f.render_widget(footer, layout[1]);
+}
+
+fn calculate_bucket_spent(transactions: &[Transaction], bucket: &str, month: &str) -> f64 {
+    let parents_with_children: HashSet<i32> = transactions
+        .iter()
+        .filter_map(|tx| tx.related_transaction_id)
+        .collect();
+
+    transactions
+        .iter()
+        .filter(|tx| {
+            tx.kind == TransactionType::Debit
+                && tx.bucket == bucket
+                && tx.date.get(..7) == Some(month)
+                && (tx.related_transaction_id.is_some() || !parents_with_children.contains(&tx.id))
+        })
+        .map(|tx| tx.amount)
+        .sum()
+}
+
+fn calculate_tracked_bucket_displayed_spent(budget: &MonthlyBudget, actual_spent: f64) -> f64 {
+    budget
+        .remaining_override
+        .map(|remaining| budget.budget - remaining + actual_spent)
+        .unwrap_or(actual_spent)
+}
+
+fn calculate_tracked_bucket_displayed_remaining(budget: &MonthlyBudget, actual_spent: f64) -> f64 {
+    budget.budget - calculate_tracked_bucket_displayed_spent(budget, actual_spent)
 }
 
 fn build_stats_content(
@@ -281,194 +338,143 @@ fn build_stats_content(
     spent: f64,
     balance: f64,
     per_tag: &HashMap<Tag, f64>,
-    monthly_history: &[(String, f64, f64)],
-    tx_count: usize,
+    configured_tags: &[Tag],
+    _monthly_history: &[(String, f64, f64)],
+    _tx_count: usize,
+    transactions: &[Transaction],
     largest: Option<Transaction>,
     smallest: Option<Transaction>,
-    top_tags: &[(Tag, f64)],
+    _top_tags: &[(Tag, f64)],
     theme: &Theme,
-    currency: &str
+    currency: &str,
+    monthly_budgets: &[MonthlyBudget],
+    monthly_income: Option<&MonthlyIncome>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-
-    lines.push(Line::raw(""));
-    lines.extend(create_overview_section(earned, spent, balance, theme, currency));
-    lines.push(Line::raw(""));
-    lines.push(
-        Line::styled(
-            "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            Style::default().fg(theme.subtle)
-        )
-    );
-    lines.push(Line::raw(""));
-
-    // Quick stats summary
-    lines.push(
-        Line::styled(
+    // Monthly budget snapshot from SQLite
+    if let Some(income) = monthly_income {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
             format!(
-                "  Transactions: {}  |  Total Earned: {}{:.2}  |  Total Spent: {}{:.2}",
-                tx_count,
-                currency,
-                earned,
-                currency,
-                spent
+                "  Monthly Dashboard: {} | Income: {} | Last edited: {}",
+                income.month,
+                money::format_vnd({
+                    let transaction_income: f64 = transactions
+                        .iter()
+                        .filter(|tx| {
+                            tx.kind == crate::models::TransactionType::Credit
+                                && tx.date.get(..7) == Some(income.month.as_str())
+                        })
+                        .map(|tx| tx.amount)
+                        .sum();
+                    income.income + transaction_income
+                }),
+                income.last_edited
             ),
-            Style::default().fg(theme.muted)
-        )
-    );
-    lines.push(Line::raw(""));
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+        lines.push(Line::raw(""));
 
-    // Monthly history mini-table
-    lines.push(
-        Line::styled(
-            "  Last Months (YYYY-MM)  Earned      Spent",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
-        )
-    );
-    lines.push(Line::raw(""));
-    if monthly_history.is_empty() {
-        lines.push(
-            Line::styled(
-                "     No monthly data available.",
-                Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC)
-            )
-        );
-    } else {
-        for (m, e, s) in monthly_history {
-            lines.push(
-                Line::from(
-                    vec![
-                        Span::raw("     "),
-                        Span::styled(format!("{:<7}", m), Style::default().fg(theme.foreground)),
-                        Span::raw("  "),
-                        Span::styled(
-                            format!("{}{:>9.2}", currency, e),
-                            Style::default().fg(theme.credit)
-                        ),
-                        Span::raw("  "),
-                        Span::styled(
-                            format!("{}{:>9.2}", currency, s),
-                            Style::default().fg(theme.debit)
-                        )
-                    ]
-                )
-            );
+        lines.push(Line::raw(format!(
+            "     {:<20} {:>10} {:>11} {:>13}  {:>14}",
+            "Bucket", "Budget", "Spent", "Remaining", "Status",
+        )));
+
+        for budget in monthly_budgets {
+            let spent_text = if budget.spent_tracking {
+                let actual_spent =
+                    calculate_bucket_spent(transactions, &budget.bucket, &budget.month);
+
+                let displayed_spent =
+                    if budget.bucket == "Baby" || budget.bucket == "Electricity Baby" {
+                        budget
+                            .spent_override
+                            .map(|baseline| baseline + actual_spent)
+                            .unwrap_or(actual_spent)
+                            .min(budget.budget)
+                    } else if budget.bucket == "Date" {
+                        budget.budget - budget.remaining_override.unwrap_or(0.0)
+                    } else if matches!(budget.bucket.as_str(), "Personal" | "Travel" | "Saving") {
+                        calculate_tracked_bucket_displayed_spent(budget, actual_spent)
+                    } else {
+                        actual_spent
+                    };
+
+                money::format_vnd(displayed_spent)
+            } else {
+                "-".to_string()
+            };
+
+            let remaining = if budget.spent_tracking
+                && matches!(budget.bucket.as_str(), "Baby" | "Electricity Baby")
+            {
+                let actual_spent =
+                    calculate_bucket_spent(transactions, &budget.bucket, &budget.month);
+                let displayed_spent = budget
+                    .spent_override
+                    .map(|baseline| baseline + actual_spent)
+                    .unwrap_or(actual_spent)
+                    .min(budget.budget);
+                money::format_vnd((budget.budget - displayed_spent).max(0.0))
+            } else if matches!(budget.bucket.as_str(), "Personal" | "Travel" | "Saving")
+                && budget.spent_tracking
+            {
+                let actual_spent =
+                    calculate_bucket_spent(transactions, &budget.bucket, &budget.month);
+                money::format_vnd(calculate_tracked_bucket_displayed_remaining(
+                    budget,
+                    actual_spent,
+                ))
+            } else {
+                budget
+                    .remaining_override
+                    .map(money::format_vnd)
+                    .unwrap_or_else(|| "-".to_string())
+            };
+
+            lines.push(Line::raw(format!(
+                "     {:<20} {:>10} {:>11} {:>13}  {:>14}",
+                budget.bucket,
+                money::format_vnd(budget.budget),
+                spent_text,
+                remaining,
+                budget.status,
+            )));
         }
+
+        lines.push(Line::raw(""));
     }
 
     lines.push(Line::raw(""));
 
-    // Top tags
-    lines.push(
-        Line::styled(
-            "  Top Spending Categories",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
-        )
-    );
     lines.push(Line::raw(""));
-    if top_tags.is_empty() {
-        lines.push(
-            Line::styled(
-                "     No category data.",
-                Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC)
-            )
-        );
+    lines.push(Line::styled(
+        "  Spending Breakdown by Category",
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD),
+    ));
+    lines.push(Line::raw(""));
+
+    let configured_spending: HashMap<Tag, f64> = configured_tags
+        .iter()
+        .filter_map(|tag| per_tag.get(tag).map(|amount| (tag.clone(), *amount)))
+        .collect();
+    if configured_spending.is_empty() {
+        lines.push(Line::styled(
+            "     No spending data available yet.",
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::ITALIC),
+        ));
     } else {
-        for (i, (tag, amt)) in top_tags.iter().take(5).enumerate() {
-            lines.push(
-                Line::from(
-                    vec![
-                        Span::raw("     "),
-                        Span::styled(
-                            format!("{}. #{:<12}", i + 1, tag.as_str()),
-                            Style::default().fg(theme.foreground)
-                        ),
-                        Span::raw("  "),
-                        Span::styled(
-                            format!("{}{:>9.2}", currency, amt),
-                            Style::default().fg(theme.debit)
-                        )
-                    ]
-                )
-            );
-        }
-    }
-
-    lines.push(Line::raw(""));
-
-    // Largest / Smallest transactions
-    lines.push(
-        Line::styled(
-            "  Notable Transactions",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
-        )
-    );
-    lines.push(Line::raw(""));
-    if let Some(tx) = largest {
-        lines.push(
-            Line::from(
-                vec![
-                    Span::raw("     Largest: "),
-                    Span::styled(
-                        format!(
-                            "{} | {}{:.2} | #{}",
-                            tx.source,
-                            currency,
-                            tx.amount,
-                            tx.tag.as_str()
-                        ),
-                        Style::default().fg(theme.foreground)
-                    )
-                ]
-            )
-        );
-    }
-    if let Some(tx) = smallest {
-        lines.push(
-            Line::from(
-                vec![
-                    Span::raw("     Smallest: "),
-                    Span::styled(
-                        format!(
-                            "{} | {}{:.2} | #{}",
-                            tx.source,
-                            currency,
-                            tx.amount,
-                            tx.tag.as_str()
-                        ),
-                        Style::default().fg(theme.foreground)
-                    )
-                ]
-            )
-        );
-    }
-
-    lines.push(Line::raw(""));
-    lines.push(
-        Line::styled(
-            "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            Style::default().fg(theme.subtle)
-        )
-    );
-
-    lines.push(Line::raw(""));
-    lines.push(
-        Line::styled(
-            "  📊 Spending Breakdown by Category",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
-        )
-    );
-    lines.push(Line::raw(""));
-
-    if per_tag.is_empty() {
-        lines.push(
-            Line::styled(
-                "     No spending data available yet.",
-                Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC)
-            )
-        );
-    } else {
-        lines.extend(create_tag_breakdown_section(per_tag, theme, currency));
+        lines.extend(create_tag_breakdown_section(
+            &configured_spending,
+            theme,
+            currency,
+        ));
     }
 
     lines.push(Line::raw(""));
@@ -480,9 +486,13 @@ fn create_overview_section(
     spent: f64,
     balance: f64,
     theme: &Theme,
-    currency: &str
+    currency: &str,
 ) -> Vec<Line<'static>> {
-    let balance_color = if balance >= 0.0 { theme.credit } else { theme.debit };
+    let balance_color = if balance >= 0.0 {
+        theme.credit
+    } else {
+        theme.debit
+    };
     let savings_rate = if earned > 0.0 {
         (((earned - spent) / earned) * 100.0).max(0.0)
     } else {
@@ -491,73 +501,81 @@ fn create_overview_section(
 
     vec![
         Line::styled(
-            "  💰 Financial Overview",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+            "  Financial Overview:",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         ),
         Line::raw(""),
-        Line::from(
-            vec![
-                Span::raw("     Total Earned  : "),
-                Span::styled(
-                    format!("{}{:>10.2}", currency, earned),
-                    Style::default().fg(theme.credit).add_modifier(Modifier::BOLD)
-                )
-            ]
-        ),
-        Line::from(
-            vec![
-                Span::raw("     Total Spent   : "),
-                Span::styled(
-                    format!("{}{:>10.2}", currency, spent),
-                    Style::default().fg(theme.debit).add_modifier(Modifier::BOLD)
-                )
-            ]
-        ),
-        Line::from(
-            vec![
-                Span::raw("     Balance       : "),
-                Span::styled(
-                    format!("{}{:>10.2}", currency, balance),
-                    Style::default()
-                        .fg(balance_color)
-                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-                )
-            ]
-        ),
-        Line::from(
-            vec![
-                Span::raw("     Savings Rate  : "),
-                Span::styled(
-                    format!("{:>9.1}%", savings_rate),
-                    Style::default()
-                        .fg(if savings_rate > 20.0 { theme.credit } else { theme.accent })
-                        .add_modifier(Modifier::BOLD)
-                )
-            ]
-        )
+        Line::from(vec![
+            Span::raw("     Total Earned  : "),
+            Span::styled(
+                format!("{}{}", currency, money::format_vnd(earned)),
+                Style::default()
+                    .fg(theme.credit)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw("     Total Spent   : "),
+            Span::styled(
+                format!("{}{}", currency, money::format_vnd(spent)),
+                Style::default().fg(theme.debit),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw("     Balance       : "),
+            Span::styled(
+                format!("{}{}", currency, money::format_vnd(balance)),
+                Style::default()
+                    .fg(balance_color)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw("     Savings Rate  : "),
+            Span::styled(
+                format!("{:>9.1}%", savings_rate),
+                Style::default()
+                    .fg(if savings_rate > 20.0 {
+                        theme.credit
+                    } else {
+                        theme.accent
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
     ]
 }
 
 fn create_tag_breakdown_section(
     per_tag: &HashMap<Tag, f64>,
     theme: &Theme,
-    currency: &str
+    currency: &str,
 ) -> Vec<Line<'static>> {
     let mut tag_vec: Vec<_> = per_tag.iter().collect();
     tag_vec.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap());
 
-    let max_spent = tag_vec
-        .first()
-        .map(|(_, v)| **v)
-        .unwrap_or(0.0);
+    let max_spent = tag_vec.first().map(|(_, v)| **v).unwrap_or(0.0);
     let total_spent: f64 = per_tag.values().sum();
 
     let mut lines = Vec::new();
 
     for (tag, &amount) in tag_vec {
-        let percentage = if total_spent > 0.0 { (amount / total_spent) * 100.0 } else { 0.0 };
+        let percentage = if total_spent > 0.0 {
+            (amount / total_spent) * 100.0
+        } else {
+            0.0
+        };
 
-        lines.push(create_tag_bar(tag.as_str(), amount, percentage, max_spent, theme, currency));
+        lines.push(create_tag_bar(
+            tag.as_str(),
+            amount,
+            percentage,
+            max_spent,
+            theme,
+            currency,
+        ));
     }
 
     lines
@@ -569,35 +587,42 @@ fn create_tag_bar(
     percentage: f64,
     max_amount: f64,
     theme: &Theme,
-    currency: &str
+    currency: &str,
 ) -> Line<'static> {
     let bar_width = calculate_bar_width(amount, max_amount);
     let bar = "█".repeat(bar_width);
     let empty_bar = "░".repeat((20usize).saturating_sub(bar_width));
 
-    Line::from(
-        vec![
-            Span::raw("     "),
-            Span::styled(
-                format!("#{:<12}", tag),
-                Style::default().fg(theme.accent_soft).add_modifier(Modifier::ITALIC)
-            ),
-            Span::raw(" "),
-            Span::styled(bar, Style::default().fg(theme.debit)),
-            Span::styled(empty_bar, Style::default().fg(theme.subtle)),
-            Span::raw("  "),
-            Span::styled(
-                format!("{}{:>9.2}", currency, amount),
-                Style::default().fg(theme.foreground).add_modifier(Modifier::BOLD)
-            ),
-            Span::raw(" "),
-            Span::styled(format!("({:>5.1}%)", percentage), Style::default().fg(theme.muted))
-        ]
-    )
+    Line::from(vec![
+        Span::raw("     "),
+        Span::styled(
+            format!("#{:>14}", tag),
+            Style::default()
+                .fg(theme.accent_soft)
+                .add_modifier(Modifier::ITALIC),
+        ),
+        Span::raw(" "),
+        Span::styled(bar, Style::default().fg(theme.debit)),
+        Span::styled(empty_bar, Style::default().fg(theme.subtle)),
+        Span::raw("  "),
+        Span::styled(
+            format!("{}{}", currency, money::format_vnd(amount)),
+            Style::default().fg(theme.foreground),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("({:>5.1}%)", percentage),
+            Style::default().fg(theme.muted),
+        ),
+    ])
 }
 
 fn calculate_bar_width(amount: f64, max_amount: f64) -> usize {
-    if max_amount > 0.0 { ((amount / max_amount) * 20.0).round() as usize } else { 0 }
+    if max_amount > 0.0 {
+        ((amount / max_amount) * 20.0).round() as usize
+    } else {
+        0
+    }
 }
 
 // ============================================================================
@@ -615,27 +640,176 @@ pub fn handle_stats(app: &mut App, key: KeyCode) -> bool {
     false
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{Transaction, TransactionType, Tag};
+    use crate::models::{Tag, Transaction, TransactionType};
 
-    fn tx(id: i32, source: &str, amount: f64, kind: TransactionType, tag: &str, date: &str) -> Transaction {
+    fn tx(
+        id: i32,
+        source: &str,
+        amount: f64,
+        kind: TransactionType,
+        tag: &str,
+        date: &str,
+    ) -> Transaction {
         Transaction {
             id,
             source: source.to_string(),
             amount,
             kind,
             tag: Tag::from_str(tag),
+            bucket: "Baby".into(),
             date: date.to_string(),
+            related_transaction_id: None,
         }
+    }
+
+    #[test]
+    fn travel_and_saving_spent_and_remaining_update_with_new_transaction() {
+        for bucket in ["Travel", "Saving"] {
+            let mut transaction = tx(
+                if bucket == "Travel" { 10 } else { 11 },
+                "test",
+                100_000.0,
+                TransactionType::Debit,
+                "other",
+                "2026-02-10",
+            );
+            transaction.bucket = bucket.to_string();
+
+            let transactions = vec![transaction];
+            let budget = MonthlyBudget {
+                month: "2026-02".to_string(),
+                bucket: bucket.to_string(),
+                budget: 1_000_000.0,
+                spent_tracking: true,
+                spent_override: None,
+                remaining_override: Some(700_000.0),
+                status: "Within budget".to_string(),
+            };
+
+            let actual_spent = calculate_bucket_spent(&transactions, bucket, "2026-02");
+
+            assert_eq!(actual_spent, 100_000.0);
+            assert_eq!(
+                calculate_tracked_bucket_displayed_spent(&budget, actual_spent),
+                400_000.0,
+                "{bucket}: displayed spent should include the new transaction"
+            );
+            assert_eq!(
+                calculate_tracked_bucket_displayed_remaining(&budget, actual_spent),
+                600_000.0,
+                "{bucket}: remaining should decrease after the new transaction"
+            );
+        }
+    }
+
+    #[test]
+    fn personal_spent_and_remaining_update_with_new_transaction() {
+        let mut personal_tx = tx(
+            1,
+            "test",
+            100_000.0,
+            TransactionType::Debit,
+            "personal",
+            "2026-02-10",
+        );
+        personal_tx.bucket = "Personal".into();
+
+        let transactions = vec![personal_tx];
+        let budget = MonthlyBudget {
+            month: "2026-02".to_string(),
+            bucket: "Personal".to_string(),
+            budget: 1_175_000.0,
+            spent_tracking: true,
+            spent_override: None,
+            remaining_override: Some(-145_000.0),
+            status: "Over budget".to_string(),
+        };
+
+        let actual_spent = calculate_bucket_spent(&transactions, "Personal", "2026-02");
+
+        assert_eq!(actual_spent, 100_000.0);
+        assert_eq!(
+            calculate_tracked_bucket_displayed_spent(&budget, actual_spent),
+            1_420_000.0
+        );
+        assert_eq!(
+            calculate_tracked_bucket_displayed_remaining(&budget, actual_spent),
+            -245_000.0
+        );
+    }
+
+    #[test]
+    fn waterfall_children_do_not_double_count_in_stats() {
+        let mut parent = tx(
+            1,
+            "test",
+            250.0,
+            TransactionType::Debit,
+            "food",
+            "2026-10-09",
+        );
+        parent.bucket = "Baby".into();
+
+        let mut baby_leg = tx(
+            2,
+            "test",
+            100.0,
+            TransactionType::Debit,
+            "food",
+            "2026-10-09",
+        );
+        baby_leg.bucket = "Baby".into();
+        baby_leg.related_transaction_id = Some(1);
+
+        let mut electric_leg = tx(
+            3,
+            "test",
+            150.0,
+            TransactionType::Debit,
+            "food",
+            "2026-10-09",
+        );
+        electric_leg.bucket = "Electric".into();
+        electric_leg.related_transaction_id = Some(1);
+
+        let transactions = vec![parent, baby_leg, electric_leg];
+
+        assert_eq!(calculate_spent(&transactions), 250.0);
+        assert_eq!(
+            calculate_spent_per_tag(&transactions).get(&Tag("food".into())),
+            Some(&250.0)
+        );
+
+        let history = calculate_monthly_history(&transactions);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].2, 250.0);
+
+        let snapshot = StatsSnapshot::new(&transactions);
+        assert_eq!(snapshot.tx_count, 1);
+        assert_eq!(
+            get_largest_transaction(&transactions).unwrap().amount,
+            250.0
+        );
+        assert_eq!(
+            get_smallest_transaction(&transactions).unwrap().amount,
+            250.0
+        );
     }
 
     #[test]
     fn calculate_earned_and_spent() {
         let transactions = vec![
-            tx(1, "a", 200.0, TransactionType::Credit, "salary", "2026-02-01"),
+            tx(
+                1,
+                "a",
+                200.0,
+                TransactionType::Credit,
+                "salary",
+                "2026-02-01",
+            ),
             tx(2, "b", 50.0, TransactionType::Debit, "food", "2026-02-02"),
             tx(3, "c", 25.0, TransactionType::Debit, "misc", "2026-02-03"),
         ];

@@ -1,9 +1,6 @@
-use ratatui::{
-    prelude::*,
-    widgets::Paragraph,
-};
+use ratatui::{prelude::*, widgets::Paragraph};
 
-use crate::theme::Theme;
+use crate::{money, theme::Theme};
 
 pub fn draw_header(
     f: &mut Frame,
@@ -14,44 +11,31 @@ pub fn draw_header(
     theme: &Theme,
     currency: &str,
 ) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(33),
-            Constraint::Percentage(34),
-            Constraint::Percentage(33),
-        ])
-        .split(area);
-
-    f.render_widget(
-        build_earned_panel(earned, currency, theme),
-        chunks[0],
-    );
-    f.render_widget(
-        build_balance_panel(balance, currency, theme),
-        chunks[1],
-    );
-    f.render_widget(
-        build_spent_panel(spent, currency, theme),
-        chunks[2],
-    );
+    let _ = earned;
+    let _ = (earned, balance, currency);
+    f.render_widget(build_spent_panel(spent, currency, theme), area);
 }
 
 fn build_earned_panel(earned: f64, currency: &str, theme: &Theme) -> Paragraph<'static> {
     let content = vec![
         Line::from(vec![
-            Span::styled("↑ ", Style::default().fg(theme.credit).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "↑ ",
+                Style::default()
+                    .fg(theme.credit)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("EARNED", theme.title()),
         ]),
         Line::raw(""),
         Line::styled(
-            format!("{}{:.2}", currency, earned),
+            format!("{}{}", currency, money::format_vnd(earned)),
             Style::default()
                 .fg(theme.credit)
                 .add_modifier(Modifier::BOLD),
         ),
     ];
-    
+
     Paragraph::new(content)
         .block(theme.panel())
         .alignment(Alignment::Center)
@@ -60,22 +44,27 @@ fn build_earned_panel(earned: f64, currency: &str, theme: &Theme) -> Paragraph<'
 fn build_balance_panel(balance: f64, currency: &str, theme: &Theme) -> Paragraph<'static> {
     let balance_color = calculate_balance_color(balance, theme);
     let balance_symbol = if balance >= 0.0 { "✓" } else { "⚠" };
-    
+
     let content = vec![
         Line::from(vec![
-            Span::styled(balance_symbol, Style::default().fg(balance_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                balance_symbol,
+                Style::default()
+                    .fg(balance_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" "),
             Span::styled("BALANCE", theme.title()),
         ]),
         Line::raw(""),
         Line::styled(
-            format!("{}{:.2}", currency, balance),
+            format!("{}{}", currency, money::format_vnd(balance)),
             Style::default()
                 .fg(balance_color)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         ),
     ];
-    
+
     Paragraph::new(content)
         .block(theme.panel())
         .alignment(Alignment::Center)
@@ -84,18 +73,21 @@ fn build_balance_panel(balance: f64, currency: &str, theme: &Theme) -> Paragraph
 fn build_spent_panel(spent: f64, currency: &str, theme: &Theme) -> Paragraph<'static> {
     let content = vec![
         Line::from(vec![
-            Span::styled("↓ ", Style::default().fg(theme.debit).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "↓ ",
+                Style::default()
+                    .fg(theme.debit)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("SPENT", theme.title()),
         ]),
         Line::raw(""),
         Line::styled(
-            format!("{}{:.2}", currency, spent),
-            Style::default()
-                .fg(theme.debit)
-                .add_modifier(Modifier::BOLD),
+            format!("{}{}", currency, money::format_vnd(spent)),
+            Style::default().fg(theme.debit),
         ),
     ];
-    
+
     Paragraph::new(content)
         .block(theme.panel())
         .alignment(Alignment::Center)

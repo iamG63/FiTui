@@ -170,6 +170,10 @@ fn handle_form(app: &mut App, key: KeyCode, conn: &Connection) -> bool {
         KeyCode::Right => match app.form.active {
             crate::form::Field::Kind => app.form.toggle_kind(),
             crate::form::Field::Tag => app.form.next_tag(app.tags.len()),
+            crate::form::Field::Bucket => app.form.next_bucket(
+                app.buckets.len()
+                    + usize::from(app.form.kind == crate::models::TransactionType::Credit),
+            ),
             crate::form::Field::Recurring => app.form.toggle_recurring(),
             crate::form::Field::RecurringInterval => app.form.next_interval(),
             _ => {}
@@ -178,6 +182,10 @@ fn handle_form(app: &mut App, key: KeyCode, conn: &Connection) -> bool {
         KeyCode::Left => match app.form.active {
             crate::form::Field::Kind => app.form.toggle_kind(),
             crate::form::Field::Tag => app.form.prev_tag(app.tags.len()),
+            crate::form::Field::Bucket => app.form.prev_bucket(
+                app.buckets.len()
+                    + usize::from(app.form.kind == crate::models::TransactionType::Credit),
+            ),
             crate::form::Field::Recurring => app.form.toggle_recurring(),
             crate::form::Field::RecurringInterval => app.form.prev_interval(),
             _ => {}
@@ -191,11 +199,15 @@ fn handle_form(app: &mut App, key: KeyCode, conn: &Connection) -> bool {
             app.form.push_char(c);
         }
 
-        KeyCode::Enter => {
-            app.save_transaction(conn);
-            app.form.reset();
-            app.mode = Mode::Normal;
-        }
+        KeyCode::Enter => match app.save_transaction(conn) {
+            Ok(()) => {
+                app.form.reset();
+                app.mode = Mode::Normal;
+            }
+            Err(message) => {
+                app.open_info_popup("Không thể lưu giao dịch", message);
+            }
+        },
 
         _ => {}
     }
@@ -298,68 +310,66 @@ fn handle_filter(app: &mut App, key: KeyCode) -> bool {
                 };
             }
         }
-        KeyCode::Backspace => {
-            match app.filter.active_field {
-                crate::app::FilterField::StartDate => {
+        KeyCode::Backspace => match app.filter.active_field {
+            crate::app::FilterField::StartDate => {
+                let s = &mut app.filter.start_date;
+                if s.ends_with('-') {
+                    s.pop();
+                }
+                s.pop();
+            }
+            crate::app::FilterField::EndDate => {
+                let s = &mut app.filter.end_date;
+                if s.ends_with('-') {
+                    s.pop();
+                }
+                s.pop();
+            }
+            _ => {}
+        },
+        KeyCode::Char(c) => match app.filter.active_field {
+            crate::app::FilterField::StartDate => {
+                if c.is_ascii_digit() {
                     let s = &mut app.filter.start_date;
-                    if s.ends_with('-') {
-                        s.pop();
+                    if s.len() < 10 {
+                        s.push(c);
+                        let len = s.len();
+                        if len == 4 || len == 7 {
+                            s.push('-');
+                        }
                     }
-                    s.pop();
+                } else if c == '-' {
+                    let s = &mut app.filter.start_date;
+                    let len = s.len();
+                    if (len == 4 || len == 7) && len < 10 {
+                        s.push(c);
+                    }
                 }
-                crate::app::FilterField::EndDate => {
+            }
+            crate::app::FilterField::EndDate => {
+                if c.is_ascii_digit() {
                     let s = &mut app.filter.end_date;
-                    if s.ends_with('-') {
-                        s.pop();
-                    }
-                    s.pop();
-                }
-                _ => {}
-            }
-        }
-        KeyCode::Char(c) => {
-            match app.filter.active_field {
-                crate::app::FilterField::StartDate => {
-                    if c.is_ascii_digit() {
-                        let s = &mut app.filter.start_date;
-                        if s.len() < 10 {
-                            s.push(c);
-                            let len = s.len();
-                            if len == 4 || len == 7 {
-                                s.push('-');
-                            }
-                        }
-                    } else if c == '-' {
-                        let s = &mut app.filter.start_date;
+                    if s.len() < 10 {
+                        s.push(c);
                         let len = s.len();
-                        if (len == 4 || len == 7) && len < 10 {
-                            s.push(c);
+                        if len == 4 || len == 7 {
+                            s.push('-');
                         }
                     }
-                }
-                crate::app::FilterField::EndDate => {
-                    if c.is_ascii_digit() {
-                        let s = &mut app.filter.end_date;
-                        if s.len() < 10 {
-                            s.push(c);
-                            let len = s.len();
-                            if len == 4 || len == 7 {
-                                s.push('-');
-                            }
-                        }
-                    } else if c == '-' {
-                        let s = &mut app.filter.end_date;
-                        let len = s.len();
-                        if (len == 4 || len == 7) && len < 10 {
-                            s.push(c);
-                        }
+                } else if c == '-' {
+                    let s = &mut app.filter.end_date;
+                    let len = s.len();
+                    if (len == 4 || len == 7) && len < 10 {
+                        s.push(c);
                     }
                 }
-                _ => {}
             }
-        }
+            _ => {}
+        },
         KeyCode::Enter => {
-            app.filter.active = !app.filter.start_date.is_empty() || !app.filter.end_date.is_empty() || app.filter.tag_index.is_some();
+            app.filter.active = !app.filter.start_date.is_empty()
+                || !app.filter.end_date.is_empty()
+                || app.filter.tag_index.is_some();
             app.selected = 0;
             app.mode = Mode::Normal;
         }

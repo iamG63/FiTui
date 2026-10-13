@@ -6,6 +6,7 @@ pub enum Field {
     Amount,
     Kind,
     Tag,
+    Bucket,
     Date,
     Recurring,
     RecurringInterval,
@@ -19,6 +20,7 @@ pub const FIELD_ORDER: &[Field] = &[
     Field::Date,
     Field::Kind,
     Field::Tag,
+    Field::Bucket,
     Field::Recurring,
     Field::RecurringInterval,
 ];
@@ -61,6 +63,9 @@ pub struct TransactionForm {
     // Index into the dynamically loaded config tags
     pub tag_index: usize,
 
+    // Index into the configured buckets
+    pub bucket_index: usize,
+
     pub date: String,
     pub recurring: bool,
     pub recurring_interval: RecurringInterval,
@@ -74,6 +79,7 @@ impl TransactionForm {
             amount: String::new(),
             kind: TransactionType::Debit,
             tag_index: 0,
+            bucket_index: 0,
             date: chrono::Local::now().format("%Y-%m-%d").to_string(),
             recurring: false,
             recurring_interval: RecurringInterval::Monthly,
@@ -110,6 +116,10 @@ impl TransactionForm {
     }
 
     pub fn toggle_kind(&mut self) {
+        self.bucket_index = match self.kind {
+            TransactionType::Debit => self.bucket_index + 1,
+            TransactionType::Credit => self.bucket_index.saturating_sub(1),
+        };
         self.kind = match self.kind {
             TransactionType::Credit => TransactionType::Debit,
             TransactionType::Debit => TransactionType::Credit,
@@ -145,6 +155,26 @@ impl TransactionForm {
             self.tag_index = total_tags - 1;
         } else {
             self.tag_index -= 1;
+        }
+    }
+
+    pub fn next_bucket(&mut self, total_buckets: usize) {
+        if total_buckets == 0 {
+            return;
+        }
+
+        self.bucket_index = (self.bucket_index + 1) % total_buckets;
+    }
+
+    pub fn prev_bucket(&mut self, total_buckets: usize) {
+        if total_buckets == 0 {
+            return;
+        }
+
+        if self.bucket_index == 0 {
+            self.bucket_index = total_buckets - 1;
+        } else {
+            self.bucket_index -= 1;
         }
     }
 }
